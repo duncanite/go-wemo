@@ -1,0 +1,27 @@
+# DO NOT EDIT MANUALLY: content-pinned by limen, reset on drift; the one line
+# Renovate moves is the `uses:` sha.
+#
+# Renovate's other half: on its branches, regenerate .hermetic/aqua-checksums.json
+# (a bumped pin with a stale checksum breaks every install) and, when the
+# branch bumps farcloser/limen, run the branch's own pinned `limen fix` so
+# the canonical files move with the pin. One fix-up commit. The steps are
+# limen's reusable workflow; its hardening is described there.
+name: update-aqua-checksum
+
+on:
+  push:
+    branches: ["renovate/**"]
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  update:
+    uses: farcloser/limen/.github/workflows/limen-update-aqua-checksum.yaml@56ef4e8a97ae7666a759b353a94be77e0ea05d12 # v0.26.0
+    permissions:
+      contents: write
+      # To approve the pull request's runs on the head the job pushes.
+      actions: write
