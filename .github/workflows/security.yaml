@@ -1,0 +1,56 @@
+# DO NOT EDIT MANUALLY: content-pinned by limen, reset on drift; the one line
+# Renovate moves is the `uses:` sha. A project's own scans go in its
+# `security` recipe in the root .justfile, which the called workflow runs.
+#
+# The security lane, apart from ci: a scan's verdict moves with the
+# vulnerability database, not with the tree, so this runs on a schedule as
+# well as on every push and pull request, and its check stands alone — a new
+# advisory reddens `security`, never `gate`, and the answer is a dependency
+# bump, never a code change. The steps are limen's reusable workflow; the
+# `security` job below is the one check the ruleset requires, a stable name
+# over the called job, as ci.yaml's `gate` is over the verify lanes.
+name: security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Daily: an advisory lands without a push, and this is how main learns.
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+# No default token permissions: each job states what it needs. This workflow
+# only ever reads the repository.
+permissions: {}
+
+# A superseded run (new push to the same branch/PR) is cancelled, not raced.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    uses: farcloser/limen/.github/workflows/limen-security.yaml@56ef4e8a97ae7666a759b353a94be77e0ea05d12 # v0.26.0
+    permissions:
+      contents: read
+
+  # The required status check. always(), and the result asserted explicitly:
+  # without always() a failed or cancelled scan SKIPS this job instead of
+  # failing it, and a skipped required check does not block a merge.
+  security:
+    needs: [scan]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: The scan succeeded
+        env:
+          # Via env, never interpolated into the script: the shell sees data,
+          # not something the expression layer can rewrite into code.
+          RESULT: ${{ needs.scan.result }}
+        shell: bash
+        run: |
+          printf 'scan: %s\n' "$RESULT"
+          [ "$RESULT" = "success" ]

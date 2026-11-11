@@ -1,0 +1,40 @@
+# DO NOT EDIT MANUALLY: content-pinned by limen, reset on drift; the one line
+# Renovate moves is the `uses:` sha.
+#
+# The cache budget. GitHub keeps 10 GB of Actions caches per repository and
+# evicts the least recently used beyond it, the current entries included, so
+# a repository over budget runs cold at random. The canonical lanes save on
+# the default branch only (a cache a pull request run saves is scoped to that
+# pull request and restorable by nothing else), and every pin or go.sum change
+# starts a new generation of every key while the old one lingers until
+# eviction (and the caches that accumulate, Go's and the fuzz corpus, start
+# one a day). This keeps one generation per key on the default branch: after
+# each ci run there, and once a day, every entry under a canonical prefix that
+# is not the newest of its family is deleted. The steps are limen's reusable
+# workflow.
+name: caches
+
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main]
+  schedule:
+    # Daily, after security's: the superseded entries a day left behind.
+    - cron: '47 6 * * *'
+  workflow_dispatch:
+
+# No default token permissions: the one job states what it needs.
+permissions: {}
+
+# One at a time, never cancelled: two prunes racing could each keep a
+# different newest.
+concurrency:
+  group: ${{ github.workflow }}
+
+jobs:
+  prune:
+    uses: farcloser/limen/.github/workflows/limen-caches.yaml@56ef4e8a97ae7666a759b353a94be77e0ea05d12 # v0.26.0
+    permissions:
+      # Listing and deleting caches is an Actions write.
+      actions: write
