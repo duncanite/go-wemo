@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -124,16 +125,61 @@ func TestSetupCommand(t *testing.T) {
 
 // TestWatchCommand: the first event, a switch, then the context ends it;
 // and a plug that never notifies is named within the first-event window.
+// syncBuffer is an output the test reads while the command still writes
+// to it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(data []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.buf.Write(data)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.buf.String()
+}
+
+func (b *syncBuffer) Reset() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	b.buf.Reset()
+}
+
+// await fails the test unless out comes to contain text within the bound,
+// which is generous: the test is ordered by what was printed, not by how
+// long it took.
+func await(t *testing.T, out *syncBuffer, text string) {
+	t.Helper()
+
+	deadline := time.Now().Add(5 * time.Second)
+
+	for !strings.Contains(out.String(), text) {
+		if time.Now().After(deadline) {
+			t.Fatalf("waited for %q; watch printed:\n%s", text, out.String())
+		}
+
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func TestWatchCommand(t *testing.T) {
 	t.Parallel()
 
 	plug := upnptest.New()
 	t.Cleanup(plug.Close)
 
-	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 
-	var out bytes.Buffer
+	var out syncBuffer
 
 	done := make(chan int, 1)
 
@@ -141,9 +187,12 @@ func TestWatchCommand(t *testing.T) {
 		done <- cli.Run(ctx, []string{"watch", plug.Host(), "--callback", "127.0.0.1:0"}, &out, &out, plug.Client())
 	}()
 
-	time.Sleep(500 * time.Millisecond)
+	// The plug is switched only once the subscription's first event, the
+	// state as it was, has been printed: switching earlier makes that first
+	// event report the new state, and the old one is never seen.
+	await(t, &out, "BinaryState = 0")
 	plug.Switch(t.Context(), true)
-	time.Sleep(500 * time.Millisecond)
+	await(t, &out, "BinaryState = 1")
 	cancel()
 
 	if status := <-done; status != cli.ExitOK {
