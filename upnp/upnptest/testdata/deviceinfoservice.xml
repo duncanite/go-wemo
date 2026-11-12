@@ -1,0 +1,91 @@
+<?xml version="1.0"?>
+<scpd xmlns="urn:Belkin:service-1-0">
+  <specVersion><major>1</major><minor>0</minor></specVersion>
+  <actionList>
+    <action><name>GetDeviceInformation</name><argumentList>
+      <argument><name>UTC</name><relatedStateVariable>UTC</relatedStateVariable><direction>out</direction></argument>
+      <argument><name>TimeZone</name><relatedStateVariable>TimeZone</relatedStateVariable><direction>out</direction></argument>
+      <argument><name>dst</name><relatedStateVariable>dst</relatedStateVariable><direction>out</direction></argument>
+      <argument><name>DstSupported</name><relatedStateVariable>DstSupported</relatedStateVariable><direction>out</direction></argument>
+      <argument><name>DeviceInformation</name><relatedStateVariable>DeviceInformation</relatedStateVariable><direction>out</direction></argument>
+      <argument><name>Payload</name><relatedStateVariable>Payload</relatedStateVariable><direction>out</direction></argument>
+      <argument><name>HKSetupState</name><relatedStateVariable>HKSetupState</relatedStateVariable><direction>out</direction></argument>
+      <argument><name>CountdownTime</name><relatedStateVariable>CountdownTime</relatedStateVariable><direction>out</direction></argument>
+      <argument><name>TimeSync</name><relatedStateVariable>TimeSync</relatedStateVariable><direction>out</direction></argument>
+    </argumentList></action>
+    <action><name>GetInformation</name><argumentList>
+      <argument><name>UTC</name><relatedStateVariable>UTC</relatedStateVariable><direction>out</direction></argument>
+      <argument><name>TimeZone</name><relatedStateVariable>TimeZone</relatedStateVariable><direction>out</direction></argument>
+      <argument><name>dst</name><relatedStateVariable>dst</relatedStateVariable><direction>out</direction></argument>
+      <argument><name>DstSupported</name><relatedStateVariable>DstSupported</relatedStateVariable><direction>out</direction></argument>
+      <argument><name>Information</name><relatedStateVariable>Information</relatedStateVariable><direction>out</direction></argument>
+      <argument><name>TimeSync</name><relatedStateVariable>TimeSync</relatedStateVariable><direction>out</direction></argument>
+    </argumentList></action>
+    <action><name>OpenInstaAP</name><argumentList>
+    </argumentList></action>
+    <action><name>CloseInstaAP</name><argumentList>
+    </argumentList></action>
+    <action><name>GetConfigureState</name><argumentList>
+      <argument><name>ConfigureState</name><relatedStateVariable>ConfigureState</relatedStateVariable><direction>out</direction></argument>
+    </argumentList></action>
+    <action><name>InstaConnectHomeNetwork</name><argumentList>
+      <argument><name>ssid</name><relatedStateVariable>ssid</relatedStateVariable><direction>in</direction></argument>
+      <argument><name>auth</name><relatedStateVariable>auth</relatedStateVariable><direction>in</direction></argument>
+      <argument><name>password</name><relatedStateVariable>password</relatedStateVariable><direction>in</direction></argument>
+      <argument><name>encrypt</name><relatedStateVariable>encrypt</relatedStateVariable><direction>in</direction></argument>
+      <argument><name>channel</name><relatedStateVariable>channel</relatedStateVariable><direction>in</direction></argument>
+      <argument><name>brlist</name><relatedStateVariable>brlist</relatedStateVariable><direction>in</direction></argument>
+    </argumentList></action>
+    <action><name>UpdateBridgeList</name><argumentList>
+      <argument><name>BridgeList</name><relatedStateVariable>BridgeList</relatedStateVariable><direction>in</direction></argument>
+    </argumentList></action>
+    <action><name>GetRouterInformation</name><argumentList>
+      <argument><name>mac</name><relatedStateVariable>mac</relatedStateVariable><direction>out</direction></argument>
+      <argument><name>ssid</name><relatedStateVariable>ssid</relatedStateVariable><direction>out</direction></argument>
+      <argument><name>auth</name><relatedStateVariable>auth</relatedStateVariable><direction>out</direction></argument>
+      <argument><name>password</name><relatedStateVariable>password</relatedStateVariable><direction>out</direction></argument>
+      <argument><name>encrypt</name><relatedStateVariable>encrypt</relatedStateVariable><direction>out</direction></argument>
+      <argument><name>channel</name><relatedStateVariable>channel</relatedStateVariable><direction>out</direction></argument>
+    </argumentList></action>
+    <action><name>InstaRemoteAccess</name><argumentList>
+      <argument><name>DeviceId</name><relatedStateVariable>DeviceId</relatedStateVariable><direction>in</direction></argument>
+      <argument><name>dst</name><relatedStateVariable>dst</relatedStateVariable><direction>in</direction></argument>
+      <argument><name>HomeId</name><relatedStateVariable>HomeId</relatedStateVariable><direction>in</direction></argument>
+      <argument><name>DeviceName</name><relatedStateVariable>DeviceName</relatedStateVariable><direction>in</direction></argument>
+      <argument><name>MacAddr</name><relatedStateVariable>MacAddr</relatedStateVariable><direction>in</direction></argument>
+      <argument><name>pluginprivateKey</name><relatedStateVariable>pluginprivateKey</relatedStateVariable><direction>in</direction></argument>
+      <argument><name>smartprivateKey</name><relatedStateVariable>smartprivateKey</relatedStateVariable><direction>in</direction></argument>
+      <argument><name>smartUniqueId</name><relatedStateVariable>smartUniqueId</relatedStateVariable><direction>in</direction></argument>
+      <argument><name>numSmartDev</name><relatedStateVariable>numSmartDev</relatedStateVariable><direction>in</direction></argument>
+    </argumentList></action>
+  </actionList>
+  <serviceStateTable>
+    <stateVariable sendEvents="no"><name>BridgeList</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>ConfigureState</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>CountdownTime</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>DeviceId</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>DeviceInformation</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>DeviceName</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>DstSupported</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>HKSetupState</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>HomeId</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>Information</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>MacAddr</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>Payload</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>TimeSync</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>TimeZone</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>UTC</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>auth</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>brlist</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>channel</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>dst</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>encrypt</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>mac</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>numSmartDev</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>password</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>pluginprivateKey</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>smartUniqueId</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>smartprivateKey</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>ssid</name><dataType>string</dataType></stateVariable>
+  </serviceStateTable>
+</scpd>
