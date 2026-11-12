@@ -69,6 +69,62 @@ image. The network the plug sits on is the whole of its security.
    plug's own metadata, calls `ConnectHomeNetwork` on the setup service, then `CloseSetup`.
    WPA2 with AES only; the passphrase is ignored on an open network.
 
+### What one plug answered, 2026-11-11
+
+A first-generation Switch, `Socket 1.0`, hardware v3, firmware
+`WeMo_WW_2.00.11565.PVT-OWRT-SNSV2`, on port 49153, through the `wemo` command:
+
+- Ten services: `WiFiSetup`, `timesync`, `basicevent`, `firmwareupdate`, `rules`,
+  `metainfo`, `remoteaccess`, `deviceinfo`, `smartsetup`, `manufacture`. `basicevent`
+  declares 47 actions; its description is `eventservice.xml`, and `basicevent.xml` is a 404.
+- The descriptions' directions are unreliable: `GetSignalStrength` declares its result as
+  an input, `GetFriendlyName` too. The answer carries the value regardless.
+- A fault may come back as HTTP 200 with a SOAP Fault body, `faultcode s:Client`,
+  `faultstring UPnPError`, `errorCode 501 Action Failed`: `GetTime` on `timesync` does.
+  `UpdateFirmware`'s neighbour `GetFirmwareVersion` answers
+  `FirmwareVersion:<version>|SkuNo:Plugin Device`.
+- `GetMetaInfo` answers `<mac>|<serial>|Plugin Device|<firmware>|Wemo.Mini.<suffix>|Socket`,
+  the MAC twelve hex digits without separators: the key material for the setup passphrase.
+- `TimeSync(UTC, TimeZone, dst, DstSupported)` with the epoch seconds, the offset in hours
+  as `-8.00`, `0` or `1`, and `1`, answers `status: success`.
+- `GetApList` answers a text table, one network per line, `ssid|channel|signal|auth/cipher`,
+  the first line a header; the house's WPA3-transition network shows as `UNKNOW/AES`, which
+  the plug cannot join, and the WPA2 ones as `WPA2PSK/AES` or `WPA2PSK/TKIPAES`.
+- `GetDeviceInformation` on `deviceinfo` answers the clock and zone, the MAC and firmware,
+  a HomeKit setup payload, and the countdown; the HomeKit state is 0 on this plug.
+- The plug does not answer ICMP echo from another subnet while answering TCP on its port.
+- The MAC in the description and in `MetaInfo` is one below the MAC the plug's radio uses,
+  the one a controller's client list and a firewall see: `…2FEC` on the plug is `…2f:ed` on
+  the air, on two plugs checked. A policy by MAC takes the radio's; the setup passphrase's
+  key material takes the plug's own, as the app did.
+- The console's client names are the console's labels, not the plugs' names; discovery
+  prints the name the plug holds.
+- A plug power-cycled takes a couple of minutes to come back on the air, flashing orange
+  until it does.
+- `GetNetworkStatus` on a plug that is joined and at rest answers 3, the value pywemo takes
+  for a handshake on the way to 1; on this firmware 3 is the steady state. `GetHKSetupInfo`
+  and `GetDeviceInformation` answer the HomeKit setup code and key to anyone on the port.
+  `GetMacAddr` answers the MAC, the UDN and the serial at once; `GetManufactureData` carries
+  the radio's MAC as `STAMacAddress`, one above the base MAC. About half the declared reads
+  answer 501: `GetDeviceId`, `GetSerialNo`, `GetPluginUDN`, `GetRouterInformation`,
+  `GetConfigureState`, `GetTime`. The plug serves `PluginLogs.txt`, `smartDev.txt`,
+  `rules.db` and `icon.jpg` over plain HTTP beside its description.
+- Setup without Belkin, done once on a first-generation Switch: `ReSetup` with `Reset=5`
+  answers `success` and the plug raises an open network, `Wemo.Mini.` and three characters
+  of its serial, with itself at 10.22.22.1 on port 49152. `GetApList` there lists the house.
+  `ConnectHomeNetwork` with the passphrase encrypted by the original method answered
+  `PairingStatus: Connecting` after six seconds, and the plug left its access point before a
+  second request could be answered; it was back on the target network at its old address,
+  relay on, about two minutes later. The plug's name and rules survived the Wi-Fi reset.
+- `setAutoFWUpdate` is declared without arguments and takes `enableAutoUpdate=0` all the
+  same, answering without a fault on all four plugs; there is no getter to read the flag
+  back. With the firmware host's domain unregistered, it is the one setting on the plug
+  worth changing.
+- A plug answers an M-SEARCH that arrived on the multicast group and not one sent to its
+  own address on port 1900: unicast discovery gets nothing. The search is repeated three
+  times a second apart and the socket listens a second past the MX window; with that, ten
+  searches in ten found every plug, where one plug had answered only intermittently.
+
 ## Toward the cloud
 
 What the plugs try, all of it dead or dangerous, and what a firewall has to drop. Ports are

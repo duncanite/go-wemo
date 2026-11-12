@@ -1,0 +1,91 @@
+# This project's carve-outs from the Go lint baseline (.limen/lint-go.yaml):
+# the baseline's sections, in its shape, holding only what this project adds,
+# changes or takes out. `just do lint go` renders the two on every run
+# (book/linting-go.md, "one baseline, per-project carve-outs"). Seeded once;
+# the file is the project's own. Every key the overlay accepts is below, with
+# what it does; anything else is refused as baseline policy.
+#
+# golangci:
+#   linters:
+#     disable:                       # takes a linter out of the baseline's set
+#       - zerologlint
+#     enable:                        # adds one the baseline turns off
+#       - godox
+#     exclusions:
+#       paths:                       # appends: files golangci-lint skips entirely
+#         - third_party/
+#       presets:                     # appends golangci-lint's exclusion presets
+#         - comments
+#       rules:                       # appends: linters, or a finding text, off under a path.
+#         # The baseline exempts tests from gocognit, goconst, gosec,
+#         # varnamelen and wrapcheck; anything else a project tolerates there
+#         # is its own. The reviewed shape, to tailor: tests are black-box
+#         # consumers, so the rules about API hygiene and production
+#         # robustness do not apply to them, while the rules about correctness
+#         # do (errcheck stays on: a test that ignores an error can pass for
+#         # the wrong reason).
+#         - path: _test\.go
+#           linters:
+#             - dupl # test cases are meant to look alike
+#             - dupword # test data
+#             - err113 # dynamic errors are fine in fixtures
+#             - dogsled # multiple-return helpers are exercised for one value at a time
+#             - noctx # no cancellation to propagate
+#             - perfsprint # readability over allocations
+#             - mnd # fixture values
+#     settings:                      # per linter, merged key by key into the baseline's:
+#       wrapcheck:                   #   a scalar overrides, a mapping recurses, a list appends,
+#         ignore-package-globs:      #   a named entry (a revive rule) overrides its namesake
+#           - github.com/example/project/*
+#   formatters:
+#     enable:                        # adds a formatter (the baseline runs gci, gofumpt, golines, goimports)
+#       - swaggo
+#     exclusions:
+#       paths:                       # appends: files the formatters skip
+#         - internal/generated/
+#     settings:                      # per formatter, merged like the linters'
+#       golines:
+#         max-len: 100
+#       gci:
+#         sections:                  # go in before the module's own group: a sibling
+#           - prefix(github.com/example-sibling)  # organization's imports group next to this one's
+# licenses:
+#   allowed:                         # replaces the baseline's list of accepted dependency licenses
+#     - Apache-2.0
+#     - MIT
+#   ignore:                          # appends modules go-licenses skips (its known false positives)
+#     - gotest.tools/v3
+# nilaway:
+#   blocking: false                  # findings print without failing the lane, while a backlog is worked off
+#   exclude-pkgs:                    # appends package prefixes NilAway leaves out
+#     - github.com/example/project/internal/generated
+#   exclude-errors-in-files:         # appends file prefixes: NilAway has no per-line suppression
+#     - internal/legacy/
+# commands:
+#   unshipped:                       # the main packages under cmd/ no release ships (book/releasing.md):
+#     - ./cmd/gen                    #   built and run from the tree; one command per entry, read by
+#                                    #   limen's workflows rule, nothing for golangci-lint
+
+golangci:
+  linters:
+    settings:
+      depguard:
+        rules:
+          main:
+            # What wemo is built on: the house application toolkit and the
+            # CLI framework. Everything else stays the baseline's $gostd.
+            allow:
+              - github.com/mycophonic/primordium
+              - github.com/alecthomas/kong
+      wrapcheck:
+        # The module's own packages wrap every error with its context at
+        # the call that failed; the command re-wrapping each one would
+        # say the same thing twice.
+        ignore-package-globs:
+          - github.com/duncanite/go-wemo/*
+
+commands:
+  # Built and run from the tree while the protocol is proven against the
+  # plugs; releasing is decided once it is.
+  unshipped:
+    - ./cmd/wemo

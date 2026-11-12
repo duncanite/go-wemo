@@ -10,13 +10,26 @@ firmware host lapse. A plug keeps trying to reach it, tens of thousands of times
 whoever registers the name answers. The plugs belong behind a firewall that lets them reach
 nothing outside, and this is the tool for talking to them inside.
 
-Nothing here yet but the reading: [docs/protocol.md](docs/protocol.md) is what a plug speaks,
-on the LAN and toward the cloud, with ports, hosts and sources.
+The command, run from the plugs' own network:
+
+```bash
+just wemo discover                         # every plug that answers
+just wemo get "Kitchen Lamp"               # by name, found by discovery
+just wemo toggle 192.0.2.10                # by address, no discovery
+just wemo watch 192.0.2.10                 # events until interrupted
+just wemo call 192.0.2.10 basicevent GetSignalStrength
+just wemo describe 192.0.2.10 -s basicevent   # every action the plug declares
+```
+
+[docs/design.md](docs/design.md) is the shape of the module and the decisions behind it;
+[docs/protocol.md](docs/protocol.md) is what a plug speaks, on the LAN and toward the cloud,
+with ports, hosts, sources, and what one plug answered.
 
 ## Working on it
 
 ```bash
-just lint      # the shared limen baseline
+just lint      # the shared limen baseline and the Go lanes
+just test      # the Go tests
 just security  # the shared scans and the link check
 just fix       # repair what `just lint` reports
 ```
