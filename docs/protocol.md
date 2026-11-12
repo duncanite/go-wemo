@@ -108,8 +108,9 @@ outbound costs the plug nothing a LAN controller uses.
   the AWS IoT endpoint and its request count.
 - [Hacking the WeMo WiFi switch](https://gist.github.com/issackelly/3214468), 2012: the
   first reading of `setup.xml`.
-- [Investigating in Isolation: WeMo](https://blog.pepperland.cloud/investigating-in-isolation-wemo/):
-  the STUN traffic and the heartbeat hosts, cited from search excerpts; the site did not
-  answer on 2026-11-11.
+- "Investigating in Isolation: WeMo", on `blog.pepperland.cloud`, at
+  `/investigating-in-isolation-wemo/`: the STUN traffic and the heartbeat hosts, cited from
+  search excerpts. The site answered nobody on 2026-11-11 and the Wayback Machine holds no
+  copy, so the address is given as text, not a link.
 - Verisign RDAP, queried 2026-11-11, for the registration state of the four domains.
 - One house resolver's log, 2026-11-11, for the counts and the NTP and AAAA behaviour.
