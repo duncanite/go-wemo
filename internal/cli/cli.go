@@ -85,9 +85,10 @@ type (
 		For time.Duration `help:"Switch back on after this long, by the plug's own countdown."`
 	}
 	watchCommand struct {
-		Targets  []string      `arg:""                                                                                                    help:"The plugs to watch."`
-		Callback string        `help:"host:port the plugs notify; empty picks this host's address on the plug's network and a free port."`
-		Lease    time.Duration `default:"30m"                                                                                             help:"The subscription length asked of each plug."`
+		Targets    []string      `arg:""                                                                                                    help:"The plugs to watch."`
+		Callback   string        `help:"host:port the plugs notify; empty picks this host's address on the plug's network and a free port."`
+		Lease      time.Duration `default:"30m"                                                                                             help:"The subscription length asked of each plug."`
+		FirstEvent time.Duration `default:"10s"                                                                                             help:"How long a plug gets to send its first event, its current state, before the callback is judged unreachable."`
 	}
 	nameCommand struct {
 		target

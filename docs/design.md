@@ -14,9 +14,10 @@ Three packages, one per protocol layer, and the plug on top of them.
   `Listen` joins the multicast group and hands over every NOTIFY, alive and bye. Both take
   the target address as an option, so a test or an odd network can point them anywhere.
   Standard library: a UDP socket and a header parser.
-- `upnp`: the device description (`setup.xml`); the service descriptions, every action with its arguments and
-  every state variable, read from the device itself; a SOAP caller that takes an action
-  name and a map of arguments and returns every element of the answer; eventing, GENA:
+- `upnp`: the device description (`setup.xml`); the service descriptions, every action
+  with its arguments and every state variable, read from the device itself; a SOAP caller
+  that takes an action name and a map of arguments and returns every element of the
+  answer; eventing, GENA:
   subscribe, renew, unsubscribe, a callback listener, and the property-set parser. Faults
   are typed errors carrying the device's own code and text.
 - `wemo`: the plug. Discovery by SSDP or by address, with the port probe a Wemo needs since

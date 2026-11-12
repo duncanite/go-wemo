@@ -1,0 +1,72 @@
+<?xml version="1.0"?>
+<scpd xmlns="urn:Belkin:service-1-0">
+  <specVersion><major>1</major><minor>0</minor></specVersion>
+  <actionList>
+    <action><name>UpdateWeeklyCalendar</name><argumentList>
+      <argument><name>Mon</name><relatedStateVariable>Mon</relatedStateVariable><direction>in</direction></argument>
+      <argument><name>Tues</name><relatedStateVariable>Tues</relatedStateVariable><direction>in</direction></argument>
+      <argument><name>Wed</name><relatedStateVariable>Wed</relatedStateVariable><direction>in</direction></argument>
+      <argument><name>Thurs</name><relatedStateVariable>Thurs</relatedStateVariable><direction>in</direction></argument>
+      <argument><name>Fri</name><relatedStateVariable>Fri</relatedStateVariable><direction>in</direction></argument>
+      <argument><name>Sat</name><relatedStateVariable>Sat</relatedStateVariable><direction>in</direction></argument>
+      <argument><name>Sun</name><relatedStateVariable>Sun</relatedStateVariable><direction>in</direction></argument>
+    </argumentList></action>
+    <action><name>EditWeeklycalendar</name><argumentList>
+      <argument><name>action</name><relatedStateVariable>action</relatedStateVariable><direction>in</direction></argument>
+    </argumentList></action>
+    <action><name>GetRulesDBPath</name><argumentList>
+      <argument><name>RulesDBPath</name><relatedStateVariable>RulesDBPath</relatedStateVariable><direction>out</direction></argument>
+    </argumentList></action>
+    <action><name>SetRulesDBVersion</name><argumentList>
+      <argument><name>RulesDBVersion</name><relatedStateVariable>RulesDBVersion</relatedStateVariable><direction>in</direction></argument>
+    </argumentList></action>
+    <action><name>GetRulesDBVersion</name><argumentList>
+      <argument><name>RulesDBVersion</name><relatedStateVariable>RulesDBVersion</relatedStateVariable><direction>out</direction></argument>
+    </argumentList></action>
+    <action><name>SetRuleID</name><argumentList>
+      <argument><name>RuleID</name><relatedStateVariable>RuleID</relatedStateVariable><direction>in</direction></argument>
+      <argument><name>RuleMsg</name><relatedStateVariable>RuleMsg</relatedStateVariable><direction>in</direction></argument>
+      <argument><name>RuleFreq</name><relatedStateVariable>RuleFreq</relatedStateVariable><direction>in</direction></argument>
+    </argumentList></action>
+    <action><name>DeleteRuleID</name><argumentList>
+      <argument><name>RuleID</name><relatedStateVariable>RuleID</relatedStateVariable><direction>in</direction></argument>
+    </argumentList></action>
+    <action><name>SimulatedRuleData</name><argumentList>
+      <argument><name>DeviceList</name><relatedStateVariable>DeviceList</relatedStateVariable><direction>in</direction></argument>
+      <argument><name>DeviceCount</name><relatedStateVariable>DeviceCount</relatedStateVariable><direction>in</direction></argument>
+    </argumentList></action>
+    <action><name>FetchRules</name><argumentList>
+      <argument><name>ruleDbPath</name><relatedStateVariable>ruleDbPath</relatedStateVariable><direction>out</direction></argument>
+      <argument><name>ruleDbVersion</name><relatedStateVariable>ruleDbVersion</relatedStateVariable><direction>out</direction></argument>
+      <argument><name>errorInfo</name><relatedStateVariable>errorInfo</relatedStateVariable><direction>out</direction></argument>
+    </argumentList></action>
+    <action><name>StoreRules</name><argumentList>
+      <argument><name>ruleDbVersion</name><relatedStateVariable>ruleDbVersion</relatedStateVariable><direction>in</direction></argument>
+      <argument><name>processDb</name><relatedStateVariable>processDb</relatedStateVariable><direction>in</direction></argument>
+      <argument><name>ruleDbBody</name><relatedStateVariable>ruleDbBody</relatedStateVariable><direction>in</direction></argument>
+      <argument><name>errorInfo</name><relatedStateVariable>errorInfo</relatedStateVariable><direction>out</direction></argument>
+    </argumentList></action>
+  </actionList>
+  <serviceStateTable>
+    <stateVariable sendEvents="no"><name>DeviceCount</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>DeviceList</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>Fri</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>Mon</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>RuleFreq</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>RuleID</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>RuleMsg</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>RulesDBPath</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>RulesDBVersion</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>Sat</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>Sun</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>Thurs</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>Tues</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>Wed</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>action</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>errorInfo</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>processDb</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>ruleDbBody</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>ruleDbPath</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>ruleDbVersion</name><dataType>string</dataType></stateVariable>
+  </serviceStateTable>
+</scpd>

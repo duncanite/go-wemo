@@ -289,17 +289,20 @@ func (p *Plug) credentials(ctx context.Context, point AccessPoint, ssid, passphr
 		)
 	}
 
-	// pywemo's reading of the app: a plug with rtos and not iot takes the
-	// second encryption method, which this does not implement.
-	if p.RTOS == "1" && p.IoT != "1" {
-		return nil, fmt.Errorf("%w: this plug's firmware wants the rtos passphrase encryption", fault.ErrNotImplemented)
-	}
-
 	encrypted := ""
 
 	if encryption == "NONE" {
 		auth = "OPEN"
 	} else {
+		// pywemo's reading of the app: a plug with rtos and not iot takes
+		// the second encryption method, which this does not implement.
+		if p.RTOS == "1" && p.IoT != "1" {
+			return nil, fmt.Errorf(
+				"%w: this plug's firmware wants the rtos passphrase encryption",
+				fault.ErrNotImplemented,
+			)
+		}
+
 		meta, err := p.MetaInfo(ctx)
 		if err != nil {
 			return nil, err
@@ -336,18 +339,17 @@ func (p *Plug) joined(ctx context.Context, status string, timeout time.Duration)
 }
 
 // awaitJoined polls GetNetworkStatus until it says connected or the key
-// was short, or the timeout passes. A plug may sit at 3 before 1, or stay
-// there once joined, so 3 at the deadline gets a few more polls and then
-// counts.
+// was short, or the timeout passes. A plug may pass through 3 on its way
+// to 1, or settle there once joined, this firmware's steady state: 3 held
+// over steadyPolls polls in a row counts as joined.
 func awaitJoined(ctx context.Context, svc *upnp.Service, timeout, poll time.Duration) (string, error) {
+	const steadyPolls = 3
+
 	deadline := time.Now().Add(timeout)
 	status := statusConnecting
+	steady := 0
 
-	for grace := 3; time.Now().Before(deadline) || (status == statusHandshake && grace > 0); {
-		if !time.Now().Before(deadline) {
-			grace--
-		}
-
+	for time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
 			return status, fmt.Errorf("%w: %w", fault.ErrCancelled, ctx.Err())
@@ -363,6 +365,16 @@ func awaitJoined(ctx context.Context, svc *upnp.Service, timeout, poll time.Dura
 		slog.DebugContext(ctx, "network status", "status", status)
 
 		if status == statusConnected || status == statusShortKey {
+			return status, nil
+		}
+
+		if status == statusHandshake {
+			steady++
+		} else {
+			steady = 0
+		}
+
+		if steady >= steadyPolls {
 			return status, nil
 		}
 	}

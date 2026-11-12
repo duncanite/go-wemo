@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<scpd xmlns="urn:Belkin:service-1-0">
+  <specVersion><major>1</major><minor>0</minor></specVersion>
+  <actionList>
+    <action><name>TimeSync</name><argumentList>
+      <argument><name>UTC</name><relatedStateVariable>UTC</relatedStateVariable><direction>in</direction></argument>
+      <argument><name>TimeZone</name><relatedStateVariable>TimeZone</relatedStateVariable><direction>in</direction></argument>
+      <argument><name>dst</name><relatedStateVariable>dst</relatedStateVariable><direction>in</direction></argument>
+      <argument><name>DstSupported</name><relatedStateVariable>DstSupported</relatedStateVariable><direction>in</direction></argument>
+    </argumentList></action>
+    <action><name>GetTime</name><argumentList>
+    </argumentList></action>
+  </actionList>
+  <serviceStateTable>
+    <stateVariable sendEvents="no"><name>DstSupported</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>TimeZone</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>UTC</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>dst</name><dataType>string</dataType></stateVariable>
+  </serviceStateTable>
+</scpd>

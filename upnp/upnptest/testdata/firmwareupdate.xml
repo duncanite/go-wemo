@@ -1,0 +1,26 @@
+<?xml version="1.0"?>
+<scpd xmlns="urn:Belkin:service-1-0">
+  <specVersion><major>1</major><minor>0</minor></specVersion>
+  <actionList>
+    <action><name>UpdateFirmware</name><argumentList>
+      <argument><name>NewFirmwareVersion</name><relatedStateVariable>NewFirmwareVersion</relatedStateVariable><direction>in</direction></argument>
+      <argument><name>ReleaseDate</name><relatedStateVariable>ReleaseDate</relatedStateVariable><direction>in</direction></argument>
+      <argument><name>URL</name><relatedStateVariable>URL</relatedStateVariable><direction>in</direction></argument>
+      <argument><name>Signature</name><relatedStateVariable>Signature</relatedStateVariable><direction>in</direction></argument>
+      <argument><name>DownloadStartTime</name><relatedStateVariable>DownloadStartTime</relatedStateVariable><direction>in</direction></argument>
+      <argument><name>WithUnsignedImage</name><relatedStateVariable>WithUnsignedImage</relatedStateVariable><direction>in</direction></argument>
+    </argumentList></action>
+    <action><name>GetFirmwareVersion</name><argumentList>
+      <argument><name>FirmwareVersion</name><relatedStateVariable>FirmwareVersion</relatedStateVariable><direction>out</direction></argument>
+    </argumentList></action>
+  </actionList>
+  <serviceStateTable>
+    <stateVariable sendEvents="no"><name>DownloadStartTime</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>FirmwareVersion</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>NewFirmwareVersion</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>ReleaseDate</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>Signature</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>URL</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>WithUnsignedImage</name><dataType>string</dataType></stateVariable>
+  </serviceStateTable>
+</scpd>

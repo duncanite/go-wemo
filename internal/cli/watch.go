@@ -71,7 +71,7 @@ func (cmd *watchCommand) Run(ctx context.Context, root *rootCommand) error {
 		return err
 	}
 
-	return printEvents(ctx, root, listener, subs, names, cmd.Lease)
+	return printEvents(ctx, root, listener, subs, names, cmd.Lease, cmd.FirstEvent)
 }
 
 // subscribeAll subscribes to every plug and returns the subscriptions made,
@@ -100,12 +100,12 @@ func subscribeAll(
 
 // printEvents prints every event and renews every lease at two thirds of
 // the shortest the devices granted, until the context ends. A plug's
-// first event, its current state, comes within seconds of subscribing; a
-// subscription with none by firstEventWithin never reached the callback,
-// and that is an error with the reason, not a wait.
+// first event, its current state, comes within a second of subscribing on
+// its own network; a subscription with none by firstEventWithin never
+// reached the callback, and that is an error with the reason, not a wait.
 func printEvents(
 	ctx context.Context, root *rootCommand, listener *upnp.Listener,
-	subs []*upnp.Subscription, names map[string]string, lease time.Duration,
+	subs []*upnp.Subscription, names map[string]string, lease, firstEventWithin time.Duration,
 ) error {
 	renew := time.NewTicker(renewalPeriod(granted(subs)))
 	defer renew.Stop()
@@ -154,10 +154,6 @@ func renewAll(ctx context.Context, subs []*upnp.Subscription, names map[string]s
 
 	return nil
 }
-
-// firstEventWithin is how long a plug gets to send its first event, its
-// current state; on its own network it takes under a second.
-const firstEventWithin = 10 * time.Second
 
 // granted is the shortest lease the devices gave, from now.
 func granted(subs []*upnp.Subscription) time.Duration {
