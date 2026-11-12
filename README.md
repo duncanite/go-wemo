@@ -25,6 +25,27 @@ just wemo describe 192.0.2.10 -s basicevent   # every action the plug declares
 [docs/protocol.md](docs/protocol.md) is what a plug speaks, on the LAN and toward the cloud,
 with ports, hosts, sources, and what one plug answered.
 
+## Verifying a release
+
+Every archive, its SBOM and `checksums.txt` carry GitHub's build provenance attestation,
+and `checksums.txt` a keyless signature by the release workflow at the tag, the one asset
+that is a signature and not a subject; the one command covers an archive, its SBOM and the
+checksums file alike:
+
+```sh
+gh attestation verify wemo_<version>_linux_amd64.tar.gz --repo duncanite/go-wemo
+```
+
+For a verifier with cosign and no `gh`, the signature over `checksums.txt`, then the
+checksums themselves:
+
+```sh
+cosign verify-blob checksums.txt --bundle checksums.txt.sigstore.json \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp '^https://github.com/duncanite/go-wemo/\.github/workflows/release\.yaml@refs/tags/v'
+sha256sum -c checksums.txt
+```
+
 ## Working on it
 
 ```bash
