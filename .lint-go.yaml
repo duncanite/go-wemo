@@ -72,11 +72,21 @@ golangci:
       depguard:
         rules:
           main:
-            # What wemo is built on: the house application toolkit and the
-            # CLI framework. Everything else stays the baseline's $gostd.
+            # What wemo is built on: the house application toolkit, the CLI
+            # framework, and the YAML parser for the fleet's files. Everything
+            # else stays the baseline's $gostd.
             allow:
               - github.com/mycophonic/primordium
+              - github.com/forkcloser/xos
               - github.com/alecthomas/kong
+              - go.yaml.in/yaml/v4
+      forbidigo:
+        forbid:
+          # A file is opened, read, listed or stat'ed through xos, whose
+          # handles let another process rename or remove it on Windows; a
+          # write goes through primordium's atomic WriteFile.
+          - pattern: '^os\.(Open|OpenFile|Create|CreateTemp|ReadFile|WriteFile|ReadDir|Rename|Stat)$'
+            msg: "open files through github.com/forkcloser/xos, write them through primordium's filesystem.WriteFile"
       wrapcheck:
         # The module's own packages wrap every error with its context at
         # the call that failed; the command re-wrapping each one would

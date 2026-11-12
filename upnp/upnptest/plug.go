@@ -82,6 +82,9 @@ type Plug struct {
 	// Silent makes the plug accept a subscription and never notify, as one
 	// does when the callback is on a network it cannot reach.
 	Silent bool
+	// KeepName makes the plug answer ChangeFriendlyName with ok and keep
+	// its name, as one does with a change it will not take.
+	KeepName bool
 	// Extra is XML added to the device element of the description before
 	// the icon list: "<rtos>1</rtos>" makes a newer plug.
 	Extra string
@@ -313,7 +316,9 @@ func (p *Plug) dispatch(service, action string, args map[string]string) ([][2]st
 	case "basicevent.GetFriendlyName":
 		return [][2]string{{"FriendlyName", p.FriendlyName}}, "", http.StatusOK
 	case "basicevent.ChangeFriendlyName":
-		p.FriendlyName = args["FriendlyName"]
+		if !p.KeepName {
+			p.FriendlyName = args["FriendlyName"]
+		}
 
 		return [][2]string{{"FriendlyName", p.FriendlyName}}, "", http.StatusOK
 	case "basicevent.GetSignalStrength":
