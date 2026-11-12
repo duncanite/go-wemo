@@ -366,12 +366,14 @@ func TestWatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Generous: a loaded runner has taken seconds over a loopback round
+	// trip, and the test is about the event, not its latency.
 	select {
 	case event := <-listener.Events():
 		if event.SID != sub.SID || event.Properties["BinaryState"] != "0" {
 			t.Fatalf("event = %+v", event)
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("no first event")
+	case <-time.After(30 * time.Second):
+		t.Fatalf("no first event within 30s; undelivered: %v", fake.Undelivered())
 	}
 }

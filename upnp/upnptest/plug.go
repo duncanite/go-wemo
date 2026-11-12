@@ -12,6 +12,7 @@ import (
 	"context"
 	"embed"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -93,6 +94,8 @@ type Plug struct {
 	// Bodies is the raw body of every SOAP call, in the same order.
 	Bodies [][]byte
 
+	undelivered []error
+
 	statusAt int
 	gone     bool
 	subs     map[string]*subscription
@@ -163,6 +166,16 @@ func (p *Plug) Subscriptions() int {
 	defer p.mu.Unlock()
 
 	return len(p.subs)
+}
+
+// Undelivered is every NOTIFY the plug could not deliver, a failed
+// request or an answer other than success, for a test that waited for an
+// event in vain to say why.
+func (p *Plug) Undelivered() []error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return append([]error(nil), p.undelivered...)
 }
 
 func (p *Plug) snapshot() map[string]*subscription {
@@ -631,14 +644,34 @@ func (p *Plug) notify(ctx context.Context, sid string, sub *subscription, proper
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		p.undeliverable(fmt.Errorf("NOTIFY %s seq %d: %w", sub.callback, seq, err))
+
 		return
 	}
 
 	_, _ = io.Copy(io.Discard, resp.Body)
 	_ = resp.Body.Close()
+
+	if resp.StatusCode >= http.StatusMultipleChoices {
+		p.undeliverable(fmt.Errorf("NOTIFY %s seq %d: %w: %s", sub.callback, seq, errNotAccepted, resp.Status))
+	}
 }
 
-const notifyTimeout = 5 * time.Second
+func (p *Plug) undeliverable(err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.undelivered = append(p.undelivered, err)
+}
+
+// errNotAccepted is a subscriber that answered a NOTIFY with anything but
+// success.
+var errNotAccepted = errors.New("the subscriber did not accept the notification")
+
+// notifyTimeout bounds one NOTIFY. Generous: a loaded runner has taken
+// seconds over a loopback round trip, and a delivery that gives up early
+// fails a test that would have passed.
+const notifyTimeout = 30 * time.Second
 
 func leaseOf(timeout string) time.Duration {
 	_, number, found := strings.Cut(timeout, "-")

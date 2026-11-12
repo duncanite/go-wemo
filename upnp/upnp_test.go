@@ -242,7 +242,7 @@ func TestEventing(t *testing.T) {
 		t.Fatalf("subscription = %+v, want the granted five minutes", sub)
 	}
 
-	first := next(t, listener)
+	first := next(t, plug, listener)
 	if first.SID != sub.SID || first.Properties["BinaryState"] != "0" ||
 		first.Properties["TimeZoneNotification"] != "005" {
 		t.Fatalf("first event = %+v", first)
@@ -250,7 +250,7 @@ func TestEventing(t *testing.T) {
 
 	plug.Switch(t.Context(), true)
 
-	second := next(t, listener)
+	second := next(t, plug, listener)
 	if second.Properties["BinaryState"] != "1" || second.Seq != first.Seq+1 {
 		t.Fatalf("second event = %+v", second)
 	}
@@ -272,14 +272,21 @@ func TestEventing(t *testing.T) {
 	}
 }
 
-func next(t *testing.T, listener *upnp.Listener) upnp.Event {
+// eventWait bounds the wait for one event. Generous: a loaded runner has
+// taken seconds over a loopback round trip, and the test is about the
+// event's order and content, not its latency.
+const eventWait = 30 * time.Second
+
+// next is the listener's next event, or the test fails saying what the
+// plug could not deliver.
+func next(t *testing.T, plug *upnptest.Plug, listener *upnp.Listener) upnp.Event {
 	t.Helper()
 
 	select {
 	case event := <-listener.Events():
 		return event
-	case <-time.After(5 * time.Second):
-		t.Fatal("no event within five seconds")
+	case <-time.After(eventWait):
+		t.Fatalf("no event within %s; undelivered: %v", eventWait, plug.Undelivered())
 
 		return upnp.Event{}
 	}
