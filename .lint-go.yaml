@@ -83,9 +83,3 @@ golangci:
         # say the same thing twice.
         ignore-package-globs:
           - github.com/duncanite/go-wemo/*
-
-commands:
-  # Built and run from the tree while the protocol is proven against the
-  # plugs; releasing is decided once it is.
-  unshipped:
-    - ./cmd/wemo

@@ -1,0 +1,69 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+# goreleaser, the release lane for the wemo command: `just do release vX.Y.Z`
+# makes the signed tag, the release workflow builds and signs what is below.
+# `just do release --local --dry-run` builds the same into .build/release/,
+# unsigned, on a laptop.
+version: 2
+
+project_name: wemo
+
+# Under .build/, which the canonical .gitignore covers, and in a subdirectory
+# of it: goreleaser --clean wipes its dist directory, and the development
+# build the `wemo` recipe puts in .build/ must survive a release run.
+dist: .build/release
+
+builds:
+  - main: ./cmd/wemo
+    binary: wemo
+    # CGO off: the whole target matrix builds from one machine, and nothing
+    # here calls C.
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    buildmode: pie
+    tags:
+      - netgo
+      - osusergo
+    ldflags:
+      - -s -w
+    # The platforms .hermetic/hermetic.yaml lists under checksum.supported_envs.
+    targets:
+      - darwin_arm64
+      - linux_amd64
+      - linux_arm64
+      - windows_amd64
+      - windows_arm64
+    # Reproducible builds: the commit's time, not the build's.
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - formats: ["tar.gz"]
+
+checksum:
+  name_template: checksums.txt
+
+release:
+  prerelease: auto
+  replace_existing_artifacts: true
+
+changelog:
+  use: github-native
+
+sboms:
+  - artifacts: archive
+    env:
+      - SYFT_FILE_METADATA_CATALOGER_ENABLED=true
+      - SYFT_CHECK_FOR_APP_UPDATE=false
+      - HERMETIC_ROOT_DIR={{ envOrDefault "HERMETIC_ROOT_DIR" "" }}
+      - HERMETIC_CONFIG={{ envOrDefault "HERMETIC_CONFIG" "" }}
+
+signs:
+  - cmd: just
+    artifacts: checksum
+    signature: "${artifact}.sigstore.json"
+    args:
+      - do
+      - release-sign
+      - "${artifact}"
+      - "${signature}"
