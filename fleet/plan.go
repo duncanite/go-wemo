@@ -68,6 +68,9 @@ type Plan struct {
 	Unreachable []string
 	// Unmanaged are the plugs that answered and have no file.
 	Unmanaged []Found
+	// Blind are the serials whose plug answered and whose file Apply will
+	// enforce without reading back: the auto-update switch, every time.
+	Blind []string
 }
 
 // Compare sets files against found, each sorted by serial.
@@ -83,6 +86,8 @@ func Compare(files map[string]Settings, found map[string]Found) *Plan {
 
 			continue
 		}
+
+		plan.Blind = append(plan.Blind, serial)
 
 		if diffs := diff(desired, current.Settings); len(diffs) > 0 {
 			plan.Changes = append(plan.Changes, Change{Serial: serial, Found: current, Diffs: diffs})
@@ -119,7 +124,8 @@ func (p *Plan) Empty() bool {
 }
 
 // Write prints the plan: each change with its keys, the plug's value on
-// the left, then the unreachable, then the unmanaged.
+// the left, then the unreachable, then the unmanaged, then the one line
+// on what an apply sends blind.
 func (p *Plan) Write(out io.Writer) {
 	for _, change := range p.Changes {
 		fmt.Fprintf(out, "%s (%s):\n", change.Serial, change.Found.Settings.Name)
@@ -135,6 +141,15 @@ func (p *Plan) Write(out io.Writer) {
 
 	for _, found := range p.Unmanaged {
 		fmt.Fprintf(out, "unmanaged: %s %s %s\n", found.Plug.Serial, found.Settings.Name, found.Plug.Base.String())
+	}
+
+	if n := len(p.Blind); n > 0 {
+		noun := "plugs"
+		if n == 1 {
+			noun = "plug"
+		}
+
+		fmt.Fprintf(out, "auto_update: sent on every apply to %d %s; a plug cannot report it\n", n, noun)
 	}
 
 	if p.Empty() {

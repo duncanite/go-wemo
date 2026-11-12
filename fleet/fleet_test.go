@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/forkcloser/xos"
 	"github.com/mycophonic/primordium/filesystem"
 
 	"github.com/duncanite/go-wemo/fleet"
@@ -28,6 +29,18 @@ func opened(t *testing.T, plug *upnptest.Plug) *wemo.Plug {
 	}
 
 	return p
+}
+
+// data is the one dumped file, as text.
+func data(t *testing.T, dir string) string {
+	t.Helper()
+
+	raw, err := xos.ReadFile(filepath.Join(dir, upnptest.Serial+fleet.Extension))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return string(raw)
 }
 
 func calls(plug *upnptest.Plug, action string) int {
@@ -66,6 +79,24 @@ func TestReadAndApply(t *testing.T) {
 	renamed, err := fleet.Apply(t.Context(), p, fleet.Settings{MAC: strings.ToLower(p.MAC), Name: "Garage"})
 	if err != nil || renamed.Name != "Garage" || plug.FriendlyName != "Garage" {
 		t.Fatalf("Apply of a new name = %+v, %v; plug holds %q", renamed, err, plug.FriendlyName)
+	}
+
+	// The auto-update switch went with both applies, off, the file's default.
+	if plug.AutoUpdate == nil || *plug.AutoUpdate || calls(plug, "basicevent.setAutoFWUpdate") != 2 {
+		t.Fatalf(
+			"auto-update after two applies: %v, sent %d times",
+			plug.AutoUpdate,
+			calls(plug, "basicevent.setAutoFWUpdate"),
+		)
+	}
+
+	if _, onErr := fleet.Apply(
+		t.Context(),
+		p,
+		fleet.Settings{Name: "Garage", AutoUpdate: true},
+	); onErr != nil ||
+		!*plug.AutoUpdate {
+		t.Fatalf("Apply with auto_update on = %v, plug holds %v", onErr, *plug.AutoUpdate)
 	}
 
 	_, err = fleet.Apply(t.Context(), p, fleet.Settings{MAC: "00:00:00:00:00:00", Name: "Garage"})
@@ -107,7 +138,7 @@ func TestFiles(t *testing.T) {
 	typo := filepath.Join(dir, "SERIAL2"+fleet.Extension)
 	if err := filesystem.WriteFile(
 		typo,
-		[]byte("name: x\nauto_update: false\n"),
+		[]byte("name: x\ncolour: red\n"),
 		filesystem.FilePermissionsDefault,
 	); err != nil {
 		t.Fatal(err)
@@ -157,7 +188,11 @@ func TestDiscoverCompareDump(t *testing.T) {
 	plan = fleet.Compare(files, found)
 	plan.Write(&out)
 
-	if !plan.Empty() || len(plan.Unmanaged) != 0 || !strings.Contains(out.String(), "No changes.") {
+	if !plan.Empty() || len(plan.Unmanaged) != 0 || !strings.Contains(out.String(), "No changes.") ||
+		!strings.Contains(
+			out.String(),
+			"auto_update: sent on every apply to 1 plug;",
+		) || !strings.Contains(data(t, dir), "auto_update: false") {
 		t.Fatalf("plan after dump = %+v:\n%s", plan, out.String())
 	}
 

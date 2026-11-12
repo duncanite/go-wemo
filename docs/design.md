@@ -28,13 +28,14 @@ top of that.
   action the device declares. Watching is a subscription and nothing else: when the
   callback never arrives, the error says so, and the caller decides.
 - `fleet`: plugs as files, for a reconciler to wire. One YAML file per plug, named by its
-  serial, holding what a plug both takes and reads back: today its name, with the MAC for
-  the reader. `Discover` finds and reads every plug; `Compare` sets the files against what
-  answered and sorts a plug into changed, unreachable or unmanaged; `Apply` makes one plug
-  match its file and reads it back, since a plug says ok to a change it does not make;
-  `Dump` writes the files from the plugs. Unreachable is never deleted: discovery is best
-  effort, and nothing here removes a file. The auto-update switch is not a key, since the
-  plug has no action to read it back.
+  serial, holding what a plug takes: its name, read back and compared, and its auto-update
+  switch, sent on every apply and never read, with the MAC for the reader. `Discover`
+  finds and reads every plug; `Compare` sets the files against what answered and sorts a
+  plug into changed, unreachable or unmanaged; `Apply` makes one plug match its file and
+  reads it back, since a plug says ok to a change it does not make; `Dump` writes the
+  files from the plugs. Unreachable is never deleted: discovery is best effort, and
+  nothing here removes a file. The plug has no action to read the auto-update switch back,
+  so a plan says what it will send rather than whether it holds.
 - `cmd/wemo`: the command, kong under primordium's process setup, logger and transport.
 
 ## Decisions
