@@ -83,6 +83,20 @@ type Plug struct {
 	// Silent makes the plug accept a subscription and never notify, as one
 	// does when the callback is on a network it cannot reach.
 	Silent bool
+	// EarlyNotify makes the plug send its first NOTIFY before it answers
+	// the SUBSCRIBE: the far edge of the race a plug runs when it notifies
+	// the moment it has answered.
+	EarlyNotify bool
+	// Stray makes the plug, before that early NOTIFY, send one under a
+	// SID it never granted to the callback, and one to another path of
+	// the callback's host; Strays holds the two statuses, in that order.
+	Stray  bool
+	Strays []int
+	// Flood is how many more such NOTIFYs the plug sends to the callback
+	// after its early one, still before it answers; Flooded counts those
+	// the subscriber took.
+	Flood   int
+	Flooded int
 	// KeepName makes the plug answer ChangeFriendlyName with ok and keep
 	// its name, as one does with a change it will not take.
 	KeepName bool
@@ -569,19 +583,28 @@ func (p *Plug) subscribe(writer http.ResponseWriter, req *http.Request) {
 
 	sub := *p.subs[sid]
 	isNew := req.Header.Get("Sid") == "" && !p.Silent
+	early := p.EarlyNotify
+	stray := p.Stray
+	flood := p.Flood
 	powered := p.On
 	p.mu.Unlock()
+
+	first := map[string]string{
+		binaryState: state(powered), "TimeZoneNotification": "005", "TimeSyncRequest": "0",
+	}
+
+	if isNew && early {
+		p.early(req.Context(), sid, &sub, first, stray, flood)
+	}
 
 	writer.Header().Set("Sid", sid)
 	writer.Header().Set("Timeout", "Second-"+strconv.Itoa(int(granted/time.Second)))
 	writer.WriteHeader(http.StatusOK)
 
-	if isNew {
+	if isNew && !early {
 		// After the answer, as the plug does; the request's context ends
 		// with the answer, so the notification runs on its own.
-		go p.notify(context.WithoutCancel(req.Context()), sid, &sub, map[string]string{
-			binaryState: state(powered), "TimeZoneNotification": "005", "TimeSyncRequest": "0",
-		})
+		go p.notify(context.WithoutCancel(req.Context()), sid, &sub, first)
 	}
 }
 
@@ -655,6 +678,71 @@ func (p *Plug) notify(ctx context.Context, sid string, sub *subscription, proper
 	if resp.StatusCode >= http.StatusMultipleChoices {
 		p.undeliverable(fmt.Errorf("NOTIFY %s seq %d: %w: %s", sub.callback, seq, errNotAccepted, resp.Status))
 	}
+}
+
+// early is the first NOTIFY sent before the SUBSCRIBE is answered, with
+// the strays around it: two before, under a SID never granted, to the
+// callback and to another path; the flood after.
+func (p *Plug) early(
+	ctx context.Context,
+	sid string,
+	sub *subscription,
+	first map[string]string,
+	stray bool,
+	flood int,
+) {
+	if stray {
+		elsewhere := sub.callback[:strings.LastIndex(sub.callback, "/")] + "/elsewhere"
+		statuses := []int{p.stray(ctx, sub.callback), p.stray(ctx, elsewhere)}
+
+		p.mu.Lock()
+		p.Strays = statuses
+		p.mu.Unlock()
+	}
+
+	p.notify(ctx, sid, sub, first)
+
+	taken := 0
+
+	for range flood {
+		if p.stray(ctx, sub.callback) == http.StatusOK {
+			taken++
+		}
+	}
+
+	p.mu.Lock()
+	p.Flooded = taken
+	p.mu.Unlock()
+}
+
+// stray sends a NOTIFY under a SID this plug never granted, and returns
+// the status it got, zero when it got none.
+func (*Plug) stray(ctx context.Context, callback string) int {
+	ctx, cancel := context.WithTimeout(ctx, notifyTimeout)
+	defer cancel()
+
+	body := strings.NewReader(
+		`<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0">` +
+			`<e:property><BinaryState>9</BinaryState></e:property></e:propertyset>`,
+	)
+
+	req, err := http.NewRequestWithContext(ctx, "NOTIFY", callback, body)
+	if err != nil {
+		return 0
+	}
+
+	req.Header.Set("Sid", "uuid:never-granted")
+	req.Header.Set("Seq", "7")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0
+	}
+
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+
+	return resp.StatusCode
 }
 
 func (p *Plug) undeliverable(err error) {

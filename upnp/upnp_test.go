@@ -2,6 +2,7 @@ package upnp_test
 
 import (
 	"errors"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -289,5 +290,90 @@ func next(t *testing.T, plug *upnptest.Plug, listener *upnp.Listener) upnp.Event
 		t.Fatalf("no event within %s; undelivered: %v", eventWait, plug.Undelivered())
 
 		return upnp.Event{}
+	}
+}
+
+// TestEventingOutrunsTheAnswer: the plug's first NOTIFY reaches the
+// listener before Subscribe has read the SUBSCRIBE answer and its SID.
+// The listener keeps it, since the plug retries nothing. In that same
+// window a NOTIFY under a SID the plug never grants is taken and never
+// reaches the stream, and one on another path is refused; so is one for
+// a subscription nobody is making. The window holds no more events than
+// the stream buffers, 64: past that a NOTIFY is refused.
+func TestEventingOutrunsTheAnswer(t *testing.T) {
+	t.Parallel()
+
+	plug := upnptest.New()
+	t.Cleanup(plug.Close)
+
+	plug.EarlyNotify = true
+	plug.Stray = true
+	plug.Flood = 100
+
+	basic, err := describe(t, plug).Service("basicevent")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	listener, err := upnp.Listen(t.Context(), "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() { _ = listener.Close(t.Context()) })
+
+	sub, err := basic.Subscribe(t.Context(), listener, 30*time.Minute)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	first := next(t, plug, listener)
+	if first.SID != sub.SID || first.Properties["BinaryState"] != "0" {
+		t.Fatalf("first event = %+v", first)
+	}
+
+	if undelivered := plug.Undelivered(); len(undelivered) != 0 {
+		t.Fatalf("the plug could not deliver: %v", undelivered)
+	}
+
+	if len(plug.Strays) != 2 || plug.Strays[0] != http.StatusOK || plug.Strays[1] != http.StatusPreconditionFailed {
+		t.Fatalf("the strays in the window got %v, want 200 on the path and 412 off it", plug.Strays)
+	}
+
+	// One stray and the plug's own event were held when the flood began.
+	if plug.Flooded != 62 {
+		t.Fatalf("the listener took %d of the flood's 100, want 62: 64 held in all", plug.Flooded)
+	}
+
+	// The stray was sent before the first event: had it reached the
+	// stream it would have been first, and it is not next either.
+	plug.Switch(t.Context(), true)
+
+	second := next(t, plug, listener)
+	if second.SID != sub.SID || second.Properties["BinaryState"] != "1" {
+		t.Fatalf("second event = %+v", second)
+	}
+
+	stray, err := http.NewRequestWithContext(t.Context(), "NOTIFY", "http://"+listener.Address()+"/basicevent",
+		strings.NewReader(`<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0"></e:propertyset>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stray.Header.Set("Sid", "uuid:nobody-asked")
+
+	resp, err := http.DefaultClient.Do(stray)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_ = resp.Body.Close()
+
+	if resp.StatusCode != http.StatusPreconditionFailed {
+		t.Fatalf("a stray NOTIFY got %s", resp.Status)
+	}
+
+	if err := sub.Unsubscribe(t.Context()); err != nil {
+		t.Fatalf("Unsubscribe: %v", err)
 	}
 }

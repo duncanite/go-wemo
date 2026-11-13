@@ -40,6 +40,18 @@ type Listener struct {
 	events   chan Event
 	mu       sync.Mutex
 	accepted map[string]struct{}
+	// pending counts the SUBSCRIBEs in flight per callback path. The
+	// device sends its first NOTIFY as soon as it has answered, and that
+	// NOTIFY can reach this server before Subscribe has read the answer
+	// and learned the SID; refusing it then loses the first event for
+	// good, since a device retries nothing. Such a NOTIFY is taken and
+	// its event held, per path, until the answer says whose it is: the
+	// stream carries granted SIDs only. A path holds no more than the
+	// stream's own buffer: past it a NOTIFY is refused unread, so a
+	// device slow to answer cannot make the listener keep whatever is
+	// sent to the path meanwhile.
+	pending map[string]int
+	held    map[string][]Event
 }
 
 // Listen opens a listener on addr, "host:port", where host is the address
@@ -56,6 +68,8 @@ func Listen(ctx context.Context, addr string) (*Listener, error) {
 		address:  socket.Addr().String(),
 		events:   make(chan Event, eventBuffer),
 		accepted: make(map[string]struct{}),
+		pending:  make(map[string]int),
+		held:     make(map[string][]Event),
 	}
 
 	listener.server = &http.Server{
@@ -97,7 +111,9 @@ func (l *Listener) Close(ctx context.Context) error {
 }
 
 // notify is the device's NOTIFY: a property set for a subscription this
-// listener holds, answered 200; anything else answered as GENA says.
+// listener holds, answered 200 and emitted; one on a path a SUBSCRIBE is
+// in flight on, answered 200 and held until the answer; anything else
+// answered as GENA says.
 func (l *Listener) notify(writer http.ResponseWriter, req *http.Request) {
 	if req.Method != "NOTIFY" {
 		http.Error(writer, "NOTIFY only", http.StatusMethodNotAllowed)
@@ -106,9 +122,11 @@ func (l *Listener) notify(writer http.ResponseWriter, req *http.Request) {
 	}
 
 	sid := req.Header.Get("Sid")
+	path := req.URL.Path
 
 	l.mu.Lock()
 	_, known := l.accepted[sid]
+	known = known || l.holds(path)
 	l.mu.Unlock()
 
 	if !known {
@@ -132,13 +150,41 @@ func (l *Listener) notify(writer http.ResponseWriter, req *http.Request) {
 	}
 
 	seq, _ := strconv.ParseUint(req.Header.Get("Seq"), 10, 64)
+	event := Event{SID: sid, Seq: seq, Properties: properties, Received: time.Now()}
+
+	// Decided again under the lock the answer takes: the SUBSCRIBE may
+	// have been answered while the body was read.
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	switch _, accepted := l.accepted[sid]; {
+	case accepted:
+		l.emit(req.Context(), event)
+	case l.holds(path):
+		l.held[path] = append(l.held[path], event)
+	default:
+		http.Error(writer, "no such subscription", http.StatusPreconditionFailed)
+
+		return
+	}
 
 	writer.WriteHeader(http.StatusOK)
+}
 
+// holds reports whether a NOTIFY on path would be held: a SUBSCRIBE is in
+// flight on it and it holds fewer events than the stream buffers. Called
+// with the lock held.
+func (l *Listener) holds(path string) bool {
+	return l.pending[path] > 0 && len(l.held[path]) < eventBuffer
+}
+
+// emit hands an event to the stream, with the lock held so events keep
+// the order they were taken in.
+func (l *Listener) emit(ctx context.Context, event Event) {
 	select {
-	case l.events <- Event{SID: sid, Seq: seq, Properties: properties, Received: time.Now()}:
+	case l.events <- event:
 	default:
-		slog.WarnContext(req.Context(), "event dropped: nobody is reading them", "sid", sid, "seq", seq)
+		slog.WarnContext(ctx, "event dropped: nobody is reading them", "sid", event.SID, "seq", event.Seq)
 	}
 }
 
@@ -174,15 +220,61 @@ func (s *Service) Subscribe(ctx context.Context, listener *Listener, lease time.
 	req.Header.Set("Timeout", "Second-"+strconv.Itoa(int(lease/time.Second)))
 
 	sub := &Subscription{service: s, listener: listener, callback: callback}
-	if err := sub.send(req); err != nil {
+
+	done := listener.expect(ctx, "/"+strings.Trim(s.Name(), "/"))
+
+	err = sub.send(req)
+	done(sub.SID, err == nil)
+
+	if err != nil {
 		return nil, err
 	}
 
-	listener.mu.Lock()
-	listener.accepted[sub.SID] = struct{}{}
-	listener.mu.Unlock()
-
 	return sub, nil
+}
+
+// expect marks a SUBSCRIBE in flight on a callback path, so a NOTIFY that
+// outruns its answer is held; the function it returns ends that: it
+// records the SID the device granted, emits the held events that are a
+// granted subscription's, and drops the rest once no SUBSCRIBE is in
+// flight on the path.
+func (l *Listener) expect(ctx context.Context, path string) func(sid string, granted bool) {
+	l.mu.Lock()
+	l.pending[path]++
+	l.mu.Unlock()
+
+	return func(sid string, granted bool) {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+
+		if granted {
+			l.accepted[sid] = struct{}{}
+		}
+
+		var waiting []Event
+
+		for _, event := range l.held[path] {
+			if _, accepted := l.accepted[event.SID]; accepted {
+				l.emit(ctx, event)
+			} else {
+				waiting = append(waiting, event)
+			}
+		}
+
+		l.held[path] = waiting
+
+		l.pending[path]--
+		if l.pending[path] > 0 {
+			return
+		}
+
+		for _, event := range waiting {
+			slog.WarnContext(ctx, "event dropped: no subscription of ours", "sid", event.SID, "seq", event.Seq)
+		}
+
+		delete(l.pending, path)
+		delete(l.held, path)
+	}
 }
 
 // Renew extends the subscription by lease; the device may grant less.
