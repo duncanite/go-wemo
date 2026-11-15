@@ -32,6 +32,8 @@ func Listen(ctx context.Context, opts Options, handle func(Announcement)) error 
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stop()
 
+	defer func() { _ = conn.Close() }()
+
 	buffer := make([]byte, datagramSize)
 
 	for {
