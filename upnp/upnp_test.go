@@ -1,7 +1,9 @@
 package upnp_test
 
 import (
+	"bytes"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
@@ -375,5 +377,30 @@ func TestEventingOutrunsTheAnswer(t *testing.T) {
 
 	if err := sub.Unsubscribe(t.Context()); err != nil {
 		t.Fatalf("Unsubscribe: %v", err)
+	}
+}
+
+// TestArgumentsInALog: a log record holds every argument under its name,
+// and a password's value as redacted whatever the name's case.
+func TestArgumentsInALog(t *testing.T) {
+	t.Parallel()
+
+	var log bytes.Buffer
+
+	slog.New(slog.NewTextHandler(&log, nil)).Info("call", "args", upnp.Arguments{
+		"ssid": "House", "password": "lower secret", "PassWord": "mixed secret", "passwords": "kept",
+	})
+
+	text := log.String()
+	if strings.Contains(text, "lower secret") || strings.Contains(text, "mixed secret") {
+		t.Fatalf("the record holds a password:\n%s", text)
+	}
+
+	for _, want := range []string{
+		"args.ssid=House", "args.password=[redacted]", "args.PassWord=[redacted]", "args.passwords=kept",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the record lacks %s:\n%s", want, text)
+		}
 	}
 }

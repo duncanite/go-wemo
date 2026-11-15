@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 
@@ -43,6 +45,28 @@ func (*FaultError) Is(target error) bool {
 // Arguments is the arguments of a call, or the elements of its answer, by
 // name. A Wemo takes and returns strings throughout.
 type Arguments map[string]string
+
+// redacted is what a log record holds in place of a secret.
+const redacted = "[redacted]"
+
+// LogValue is the arguments as a log record holds them: every name, and
+// every value but a password's, whatever the name's case. The password a
+// Wemo is sent is encrypted under a key the plug publishes, so it is no
+// better in a log than the passphrase itself.
+func (a Arguments) LogValue() slog.Value {
+	attrs := make([]slog.Attr, 0, len(a))
+
+	for _, name := range slices.Sorted(maps.Keys(a)) {
+		value := a[name]
+		if strings.EqualFold(name, "password") {
+			value = redacted
+		}
+
+		attrs = append(attrs, slog.String(name, value))
+	}
+
+	return slog.GroupValue(attrs...)
+}
 
 // Call invokes action on the service with args and returns every element
 // of the answer, whatever direction the description claimed. The
