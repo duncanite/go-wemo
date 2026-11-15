@@ -294,6 +294,58 @@ func TestCompareEdges(t *testing.T) {
 	}
 }
 
+// TestSerialsThatNameNoFile: a serial that is not a file's name in the
+// directory, or names one Load skips, is ErrInvalidFile from Save and from
+// Dump, forced or not, and nothing is made, in the directory or beside it.
+func TestSerialsThatNameNoFile(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	dir := filepath.Join(root, "plugs")
+
+	for _, serial := range []string{
+		"", ".", "..", ".hidden", "../escaped", "sub/serial", "nul\x00serial", strings.Repeat("S", 300),
+	} {
+		if err := fleet.Save(dir, serial, fleet.Settings{Name: "Garage"}); !errors.Is(err, fleet.ErrInvalidFile) {
+			t.Errorf("Save under the serial %q = %v, want ErrInvalidFile", serial, err)
+		}
+
+		for _, force := range []bool{false, true} {
+			written, err := fleet.Dump(dir, map[string]fleet.Found{serial: {}}, force)
+			if !errors.Is(err, fleet.ErrInvalidFile) || len(written) != 0 {
+				t.Errorf("Dump of the serial %q, force %t = %v, %v, want ErrInvalidFile", serial, force, written, err)
+			}
+		}
+	}
+
+	if left, err := xos.ReadDir(root); err != nil || len(left) != 0 {
+		t.Fatalf("the refused serials left %v behind, %v", left, err)
+	}
+}
+
+// TestDiscoverRefusesASerial: a plug whose description states a serial
+// that is not a file's name is a failure naming where it answered, and is
+// not among the found.
+func TestDiscoverRefusesASerial(t *testing.T) {
+	t.Parallel()
+
+	plug := upnptest.New()
+	t.Cleanup(plug.Close)
+
+	// A description is read as holding the later of two serialNumber elements.
+	plug.Extra = "<serialNumber>../../escaped</serialNumber>"
+
+	found, failures, err := fleet.Discover(
+		t.Context(),
+		plug.Client(),
+		ssdp.Options{Target: plug.ServeSSDP(), Wait: time.Second},
+	)
+	if err != nil || len(found) != 0 || len(failures) != 1 ||
+		!errors.Is(failures[0], fleet.ErrInvalidFile) || !strings.Contains(failures[0].Error(), plug.Location()) {
+		t.Fatalf("Discover of a plug with a serial that leaves the directory = %+v, %v, %v", found, failures, err)
+	}
+}
+
 // TestDiscoverNobodyAnswers: a search nobody answers is an empty fleet,
 // not an error.
 func TestDiscoverNobodyAnswers(t *testing.T) {

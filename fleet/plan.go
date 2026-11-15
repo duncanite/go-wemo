@@ -20,9 +20,10 @@ type Found struct {
 }
 
 // Discover finds the plugs on the network and reads each, keyed by serial.
-// A device that answered and could not be described or read is a failure
-// beside the result, not an error: the rest of the fleet is still there.
-// Nobody answering is an empty result.
+// A device that answered and could not be described or read, or whose
+// serial cannot be a file's name, is a failure beside the result, not an
+// error: the rest of the fleet is still there. Nobody answering is an
+// empty result.
 func Discover(ctx context.Context, client *http.Client, opts ssdp.Options) (map[string]Found, []error, error) {
 	plugs, failures, err := wemo.Discover(ctx, client, opts)
 	if err != nil && !errors.Is(err, ssdp.ErrNoAnswer) {
@@ -32,6 +33,12 @@ func Discover(ctx context.Context, client *http.Client, opts ssdp.Options) (map[
 	found := make(map[string]Found, len(plugs))
 
 	for _, plug := range plugs {
+		if _, err := named(plug.Serial); err != nil {
+			failures = append(failures, fmt.Errorf("%s: %w", plug.Base, err))
+
+			continue
+		}
+
 		settings, err := Read(ctx, plug)
 		if err != nil {
 			failures = append(failures, err)
