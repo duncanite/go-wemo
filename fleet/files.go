@@ -13,6 +13,7 @@ import (
 	"github.com/forkcloser/xos"
 	"github.com/mycophonic/primordium/fault"
 	"github.com/mycophonic/primordium/filesystem"
+	"github.com/mycophonic/primordium/filesystem/pathcheck"
 	"go.yaml.in/yaml/v4"
 )
 
@@ -21,8 +22,26 @@ import (
 const Extension = ".yaml"
 
 // ErrInvalidFile is a file that is not a plug's: a stray extension, a key
-// no plug has, YAML that does not parse.
+// no plug has, YAML that does not parse, or a serial that cannot be a
+// file's name.
 var ErrInvalidFile = fault.ErrInvalidArgument
+
+// named is the name of the file for serial. A serial is the plug's own
+// word, read off the network: one that is more than a file's name would
+// leave dir, and one that is empty or starts with a dot would name a file
+// Load skips.
+func named(serial string) (string, error) {
+	if serial == "" || strings.HasPrefix(serial, ".") {
+		return "", fmt.Errorf("%w: the serial %q cannot name a plug's file", ErrInvalidFile, serial)
+	}
+
+	name := serial + Extension
+	if err := pathcheck.ValidateComponent(name); err != nil {
+		return "", fmt.Errorf("%w: the serial %q cannot name a plug's file: %w", ErrInvalidFile, serial, err)
+	}
+
+	return name, nil
+}
 
 // Load reads every file under dir, keyed by the serial its name carries.
 // A key the file states that Settings does not have is refused: a typo
@@ -75,8 +94,15 @@ func readFile(path string) (Settings, error) {
 }
 
 // Save writes one plug's file under dir, creating dir when it is missing.
+// A serial that cannot be a file's name in dir is ErrInvalidFile, and
+// nothing is made.
 func Save(dir, serial string, settings Settings) error {
-	if err := os.MkdirAll(dir, filesystem.DirPermissionsDefault); err != nil {
+	name, err := named(serial)
+	if err != nil {
+		return err
+	}
+
+	if err = os.MkdirAll(dir, filesystem.DirPermissionsDefault); err != nil {
 		return fmt.Errorf("%w: creating %s: %w", fault.ErrWriteFailure, dir, err)
 	}
 
@@ -85,8 +111,8 @@ func Save(dir, serial string, settings Settings) error {
 		return fmt.Errorf("%w: %s: %w", fault.ErrWriteFailure, serial, err)
 	}
 
-	path := filepath.Join(dir, serial+Extension)
-	if err := filesystem.WriteFile(path, data, filesystem.FilePermissionsDefault); err != nil {
+	path := filepath.Join(dir, name)
+	if err = filesystem.WriteFile(path, data, filesystem.FilePermissionsDefault); err != nil {
 		return fmt.Errorf("%w: writing %s: %w", fault.ErrWriteFailure, path, err)
 	}
 
@@ -97,7 +123,8 @@ func Save(dir, serial string, settings Settings) error {
 // as it is unless force is set, and returns the serials it wrote, in
 // order. A file is rewritten whole: a comment in it does not survive a
 // forced dump. A plug with a file and no answer is not touched, since
-// not answering is not being gone.
+// not answering is not being gone. A serial that cannot be a file's name
+// in dir is ErrInvalidFile, and the dump stops there.
 func Dump(dir string, found map[string]Found, force bool) ([]string, error) {
 	serials := make([]string, 0, len(found))
 	for serial := range found {
@@ -109,10 +136,15 @@ func Dump(dir string, found map[string]Found, force bool) ([]string, error) {
 	var written []string
 
 	for _, serial := range serials {
-		path := filepath.Join(dir, serial+Extension)
+		name, err := named(serial)
+		if err != nil {
+			return written, err
+		}
+
+		path := filepath.Join(dir, name)
 
 		if !force {
-			_, err := xos.Stat(path)
+			_, err = xos.Stat(path)
 
 			switch {
 			case err == nil:
@@ -123,7 +155,7 @@ func Dump(dir string, found map[string]Found, force bool) ([]string, error) {
 			}
 		}
 
-		if err := Save(dir, serial, found[serial].Settings); err != nil {
+		if err = Save(dir, serial, found[serial].Settings); err != nil {
 			return written, err
 		}
 
