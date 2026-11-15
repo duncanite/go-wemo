@@ -1,7 +1,11 @@
 package wemo_test
 
 import (
+	"context"
 	"errors"
+	"log/slog"
+	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"testing"
@@ -14,6 +18,47 @@ import (
 	"github.com/duncanite/go-wemo/upnp/upnptest"
 	"github.com/duncanite/go-wemo/wemo"
 )
+
+// loggedJoinEnv, when set, makes the test binary a child that joins a
+// plug of its own with the default logger at debug on its standard output.
+const (
+	loggedJoinEnv  = "WEMO_TEST_LOGGED_JOIN"
+	joinPassphrase = "correct horse battery"
+	// joinPassword is that passphrase as the fake plug is sent it.
+	joinPassword = "8aZoYhaDijAKwMORA5wATIYQf2gSXYeuuhrJ7LIqFX4=2c15"
+)
+
+func TestMain(m *testing.M) {
+	if os.Getenv(loggedJoinEnv) != "" {
+		os.Exit(loggedJoin())
+	}
+
+	m.Run()
+}
+
+// loggedJoin is the child: 0 when the plug was sent the password, with
+// every record of the join on standard output.
+func loggedJoin() int {
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug})))
+
+	fake := upnptest.New()
+	defer fake.Close()
+
+	ctx := context.Background()
+
+	plug, err := wemo.Open(ctx, fake.Client(), fake.Host())
+	if err == nil {
+		err = plug.Join(ctx, "House", joinPassphrase, wemo.SetupOptions{Poll: 10 * time.Millisecond})
+	}
+
+	if err != nil || len(fake.Connects) == 0 || fake.Connects[0]["password"] != joinPassword {
+		slog.Error("the join in the child", "err", err, "connects", len(fake.Connects))
+
+		return 1
+	}
+
+	return 0
+}
 
 func open(t *testing.T, plug *upnptest.Plug) *wemo.Plug {
 	t.Helper()
@@ -266,6 +311,33 @@ func TestSetup(t *testing.T) {
 	err = plug.Join(t.Context(), "House", "short", quick)
 	if err == nil || !errors.Is(err, fault.ErrInvalidArgument) || !strings.Contains(err.Error(), "eight") {
 		t.Fatalf("a short key = %v", err)
+	}
+}
+
+// TestJoinKeepsThePassphraseOutOfTheLog: at debug, the log of a join shows
+// the call and its arguments, and holds the passphrase neither as given
+// nor as sent. The join runs in a child, the default logger being the
+// whole process's.
+func TestJoinKeepsThePassphraseOutOfTheLog(t *testing.T) {
+	t.Parallel()
+
+	child := exec.CommandContext(t.Context(), os.Args[0])
+
+	child.Env = append(os.Environ(), loggedJoinEnv+"=1")
+
+	out, err := child.CombinedOutput()
+	text := string(out)
+
+	if err != nil {
+		t.Fatalf("the join in a child: %v\n%s", err, text)
+	}
+
+	if strings.Contains(text, joinPassphrase) || strings.Contains(text, joinPassword) {
+		t.Fatalf("the log of a join holds the passphrase:\n%s", text)
+	}
+
+	if !strings.Contains(text, "action=ConnectHomeNetwork") || !strings.Contains(text, "args.ssid=House") {
+		t.Fatalf("the log of a join does not show the call and its arguments:\n%s", text)
 	}
 }
 
