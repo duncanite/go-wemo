@@ -1,11 +1,10 @@
-// Package upnptest is a Wemo plug for tests: an HTTP server speaking what
+// Package wemotest is a Wemo plug for tests: an HTTP server speaking what
 // one first-generation Switch was seen to speak, documents it served and
-// answers it gave, over a state held in memory; and an SSDP responder for
-// a search pointed at it. What the real plug did is what this does: a
-// fault inside a 200 for GetTime, 501 for the actions it declares and
-// never built, a steady network status of 3 once joined, a first NOTIFY
-// with the current state on every subscription.
-package upnptest
+// answers it gave, over a state held in memory. What the real plug did is
+// what this does: a fault inside a 200 for GetTime, 501 for the actions it
+// declares and never built, a steady network status of 3 once joined, a
+// first NOTIFY with the current state on every subscription.
+package wemotest
 
 import (
 	"bytes"
@@ -15,13 +14,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -72,8 +69,10 @@ type Plug struct {
 	// Dead makes the plug hang up on the first ConnectHomeNetwork without
 	// answering it: a plug that took nothing, as opposed to one that left.
 	Dead bool
-	// Searches counts the M-SEARCHes the SSDP responder received.
-	Searches atomic.Int32
+	// Faults makes the plug answer an action, "service.Action", with a
+	// fault of that code under a 500; Garbled, with what is no SOAP.
+	Faults  map[string]string
+	Garbled map[string]bool
 	// Statuses is what GetNetworkStatus answers, in order, the last one
 	// repeated; empty is 0, 0, 3.
 	Statuses []string
@@ -83,26 +82,14 @@ type Plug struct {
 	// Silent makes the plug accept a subscription and never notify, as one
 	// does when the callback is on a network it cannot reach.
 	Silent bool
-	// EarlyNotify makes the plug send its first NOTIFY before it answers
-	// the SUBSCRIBE: the far edge of the race a plug runs when it notifies
-	// the moment it has answered.
-	EarlyNotify bool
-	// Stray makes the plug, before that early NOTIFY, send one under a
-	// SID it never granted to the callback, and one to another path of
-	// the callback's host; Strays holds the two statuses, in that order.
-	Stray  bool
-	Strays []int
-	// Flood is how many more such NOTIFYs the plug sends to the callback
-	// after its early one, still before it answers; Flooded counts those
-	// the subscriber took.
-	Flood   int
-	Flooded int
 	// KeepName makes the plug answer ChangeFriendlyName with ok and keep
 	// its name, as one does with a change it will not take.
 	KeepName bool
 	// Extra is XML added to the device element of the description before
 	// the icon list: "<rtos>1</rtos>" makes a newer plug.
 	Extra string
+	// Subscribed counts the SUBSCRIBE requests received, new and renewals.
+	Subscribed int
 	// Calls is every SOAP action received, "service.Action", in order.
 	Calls []string
 	// Bodies is the raw body of every SOAP call, in the same order.
@@ -114,9 +101,6 @@ type Plug struct {
 	gone     bool
 	subs     map[string]*subscription
 	nextSID  int
-	ssdp     *net.UDPConn
-	ssdpAddr string
-	done     chan struct{}
 }
 
 type subscription struct {
@@ -132,23 +116,11 @@ func New() *Plug {
 		FriendlyName: Name,
 		Signal:       defaultSignal,
 		subs:         make(map[string]*subscription),
-		done:         make(chan struct{}),
 	}
 
 	plug.Server = httptest.NewServer(http.HandlerFunc(plug.handle))
 
 	return plug
-}
-
-// Close stops the server and the SSDP responder.
-func (p *Plug) Close() {
-	close(p.done)
-
-	if p.ssdp != nil {
-		_ = p.ssdp.Close()
-	}
-
-	p.Server.Close()
 }
 
 // Host is the server's host:port.
@@ -281,9 +253,21 @@ func (p *Plug) soap(writer http.ResponseWriter, req *http.Request) {
 	p.mu.Lock()
 	p.Calls = append(p.Calls, service+"."+action)
 	p.Bodies = append(p.Bodies, body)
+	refused, faulted := p.Faults[service+"."+action]
+	garbled := p.Garbled[service+"."+action]
 	p.mu.Unlock()
 
+	if garbled {
+		_, _ = writer.Write([]byte("no answer of a plug's"))
+
+		return
+	}
+
 	answer, fault, status := p.dispatch(service, action, args)
+	if faulted {
+		fault, status = refused, http.StatusInternalServerError
+	}
+
 	if status == hangUp {
 		if hijacker, ok := writer.(http.Hijacker); ok {
 			if conn, _, err := hijacker.Hijack(); err == nil {
@@ -551,6 +535,8 @@ func (p *Plug) subscribe(writer http.ResponseWriter, req *http.Request) {
 
 	p.mu.Lock()
 
+	p.Subscribed++
+
 	granted := asked
 	if p.LeaseGranted > 0 {
 		granted = p.LeaseGranted
@@ -583,9 +569,6 @@ func (p *Plug) subscribe(writer http.ResponseWriter, req *http.Request) {
 
 	sub := *p.subs[sid]
 	isNew := req.Header.Get("Sid") == "" && !p.Silent
-	early := p.EarlyNotify
-	stray := p.Stray
-	flood := p.Flood
 	powered := p.On
 	p.mu.Unlock()
 
@@ -593,15 +576,11 @@ func (p *Plug) subscribe(writer http.ResponseWriter, req *http.Request) {
 		binaryState: state(powered), "TimeZoneNotification": "005", "TimeSyncRequest": "0",
 	}
 
-	if isNew && early {
-		p.early(req.Context(), sid, &sub, first, stray, flood)
-	}
-
 	writer.Header().Set("Sid", sid)
 	writer.Header().Set("Timeout", "Second-"+strconv.Itoa(int(granted/time.Second)))
 	writer.WriteHeader(http.StatusOK)
 
-	if isNew && !early {
+	if isNew {
 		// After the answer, as the plug does; the request's context ends
 		// with the answer, so the notification runs on its own.
 		go p.notify(context.WithoutCancel(req.Context()), sid, &sub, first)
@@ -678,71 +657,6 @@ func (p *Plug) notify(ctx context.Context, sid string, sub *subscription, proper
 	if resp.StatusCode >= http.StatusMultipleChoices {
 		p.undeliverable(fmt.Errorf("NOTIFY %s seq %d: %w: %s", sub.callback, seq, errNotAccepted, resp.Status))
 	}
-}
-
-// early is the first NOTIFY sent before the SUBSCRIBE is answered, with
-// the strays around it: two before, under a SID never granted, to the
-// callback and to another path; the flood after.
-func (p *Plug) early(
-	ctx context.Context,
-	sid string,
-	sub *subscription,
-	first map[string]string,
-	stray bool,
-	flood int,
-) {
-	if stray {
-		elsewhere := sub.callback[:strings.LastIndex(sub.callback, "/")] + "/elsewhere"
-		statuses := []int{p.stray(ctx, sub.callback), p.stray(ctx, elsewhere)}
-
-		p.mu.Lock()
-		p.Strays = statuses
-		p.mu.Unlock()
-	}
-
-	p.notify(ctx, sid, sub, first)
-
-	taken := 0
-
-	for range flood {
-		if p.stray(ctx, sub.callback) == http.StatusOK {
-			taken++
-		}
-	}
-
-	p.mu.Lock()
-	p.Flooded = taken
-	p.mu.Unlock()
-}
-
-// stray sends a NOTIFY under a SID this plug never granted, and returns
-// the status it got, zero when it got none.
-func (*Plug) stray(ctx context.Context, callback string) int {
-	ctx, cancel := context.WithTimeout(ctx, notifyTimeout)
-	defer cancel()
-
-	body := strings.NewReader(
-		`<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0">` +
-			`<e:property><BinaryState>9</BinaryState></e:property></e:propertyset>`,
-	)
-
-	req, err := http.NewRequestWithContext(ctx, "NOTIFY", callback, body)
-	if err != nil {
-		return 0
-	}
-
-	req.Header.Set("Sid", "uuid:never-granted")
-	req.Header.Set("Seq", "7")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return 0
-	}
-
-	_, _ = io.Copy(io.Discard, resp.Body)
-	_ = resp.Body.Close()
-
-	return resp.StatusCode
 }
 
 func (p *Plug) undeliverable(err error) {

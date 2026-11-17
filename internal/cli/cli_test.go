@@ -3,23 +3,75 @@ package cli_test
 import (
 	"bytes"
 	"context"
+	"errors"
+	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/forkcloser/go-upnp/ssdp"
+	"github.com/forkcloser/go-upnp/ssdp/ssdptest"
+
 	"github.com/duncanite/go-wemo/internal/cli"
-	"github.com/duncanite/go-wemo/upnp/upnptest"
+	"github.com/duncanite/go-wemo/wemo"
+	"github.com/duncanite/go-wemo/wemo/wemotest"
 )
 
-func run(t *testing.T, plug *upnptest.Plug, args ...string) (string, int) {
+// run runs the command against a plug, on a network with no device.
+func run(t *testing.T, args ...string) (string, int) {
+	t.Helper()
+
+	return runOn(t, ssdptest.NewHost(), args...)
+}
+
+// runOn runs the command on a network.
+func runOn(t *testing.T, network ssdp.Network, args ...string) (string, int) {
 	t.Helper()
 
 	var out, errs bytes.Buffer
 
-	status := cli.Run(t.Context(), args, &out, &errs, plug.Client())
+	status := cli.Run(t.Context(), cli.Environment{
+		Args: args, Out: &out, Err: &errs, Client: local{}, Network: network,
+	})
 
 	return out.String() + errs.String(), status
+}
+
+// errNobody is what local returns for a host that is not this one.
+var errNobody = errors.New("nobody answers there")
+
+// local is a client that reaches the loopback, where the plugs of
+// these tests are, and no other host: a test that wants a host nobody
+// answers on names one that is not there, and asks nothing of the ports
+// of the host it runs on.
+type local struct{}
+
+func (local) Do(request *http.Request) (*http.Response, error) {
+	if request.URL.Hostname() != "127.0.0.1" {
+		return nil, errNobody
+	}
+
+	return http.DefaultClient.Do(request)
+}
+
+// advertised is a network the plugs are advertised on, each at the loopback
+// address its server listens at, and this host on it.
+func advertised(plugs ...*wemotest.Plug) *ssdptest.Host {
+	lan, host := ssdptest.NewLAN(), ssdptest.NewHost()
+
+	host.Plug(lan, "lo0", 1, netip.MustParsePrefix("127.0.0.1/8"))
+
+	for index, plug := range plugs {
+		usn := "uuid:Socket-1_0-" + string(rune('A'+index)) + "::" + wemo.SearchTarget
+
+		lan.Device(netip.MustParseAddr("127.0.0.1"), ssdptest.Advert{
+			USN: usn, Type: wemo.SearchTarget, Location: plug.Location(),
+		})
+	}
+
+	return host
 }
 
 // TestTheCommands: every command against the plug by host and port, its
@@ -27,7 +79,7 @@ func run(t *testing.T, plug *upnptest.Plug, args ...string) (string, int) {
 func TestTheCommands(t *testing.T) {
 	t.Parallel()
 
-	plug := upnptest.New()
+	plug := wemotest.New()
 	t.Cleanup(plug.Close)
 
 	host := plug.Host()
@@ -50,9 +102,8 @@ func TestTheCommands(t *testing.T) {
 		{[]string{"networks", host}, "House                            ch 11   100 WPA2PSK/AES\n"},
 		{[]string{"describe", host}, "services:\n  WiFiSetup        urn:Belkin:service:WiFiSetup:1\n"},
 		{[]string{"describe", host, "-s", "timesync"}, "TimeSync(UTC:in, TimeZone:in, dst:in, DstSupported:in)\nGetTime()\n"},
-		{[]string{"discover", "--target", plug.ServeSSDP(), "--wait", "1s"}, "Hall                         Socket   " + upnptest.Firmware},
 	} {
-		out, status := run(t, plug, step.args...)
+		out, status := run(t, step.args...)
 		if status != cli.ExitOK || !strings.Contains(out, step.want) {
 			t.Fatalf("%v: status %d, output:\n%s\nwant %q", step.args, status, out, step.want)
 		}
@@ -70,7 +121,7 @@ func TestTheCommands(t *testing.T) {
 func TestTheErrors(t *testing.T) {
 	t.Parallel()
 
-	plug := upnptest.New()
+	plug := wemotest.New()
 	t.Cleanup(plug.Close)
 
 	host := plug.Host()
@@ -79,24 +130,20 @@ func TestTheErrors(t *testing.T) {
 		args []string
 		want string
 	}{
-		{[]string{"call", host, "timesync", "GetTime"}, "the device answered 501 Action Failed (HTTP 200)"},
+		{[]string{"call", host, "timesync", "GetTime"}, "501"},
 		{[]string{"call", host, "basicevent", "Nope"}, `no action "Nope"`},
 		{[]string{"call", host, "basicevent", "GetBinaryState", "x"}, `argument "x" is not name=value`},
 		{[]string{"reset", host, "--yes"}, "one of --wifi, --data or --all"},
-		{[]string{"get", "127.0.0.1"}, "no Wemo answered on 127.0.0.1"},
+		{[]string{"get", "192.0.2.1"}, "no Wemo answered on 192.0.2.1"},
 		{[]string{"setup", "--ssid", "House", "--host", host}, "WEMO_PASSPHRASE is empty"},
 	} {
-		out, status := run(t, plug, step.args...)
+		out, status := run(t, step.args...)
 		if status != cli.ExitError || !strings.Contains(out, step.want) {
 			t.Fatalf("%v: status %d, output:\n%s\nwant %q", step.args, status, out, step.want)
 		}
 	}
 
-	if out, status := run(
-		t,
-		plug,
-		"--help",
-	); status != cli.ExitOK ||
+	if out, status := run(t, "--help"); status != cli.ExitOK ||
 		!strings.Contains(out, "Speak to the Wemo plugs") {
 		t.Fatalf("--help: %d\n%s", status, out)
 	}
@@ -105,14 +152,14 @@ func TestTheErrors(t *testing.T) {
 // TestSetupCommand: the passphrase from the environment, the join through
 // a plug that leaves its access point, reported as the outcome it is.
 func TestSetupCommand(t *testing.T) {
-	plug := upnptest.New()
+	plug := wemotest.New()
 	t.Cleanup(plug.Close)
 
 	plug.Leaves = true
 
 	t.Setenv("WEMO_PASSPHRASE", "correct horse battery")
 
-	out, status := run(t, plug, "setup", "--ssid", "House", "--host", plug.Host(), "--timeout", "20s")
+	out, status := run(t, "setup", "--ssid", "House", "--host", plug.Host(), "--timeout", "20s")
 	if status != cli.ExitOK ||
 		!strings.Contains(out, "Kitchen Lamp: took the request and left its access point for House") {
 		t.Fatalf("setup: %d\n%s", status, out)
@@ -173,7 +220,7 @@ func await(t *testing.T, out *syncBuffer, text string) {
 func TestWatchCommand(t *testing.T) {
 	t.Parallel()
 
-	plug := upnptest.New()
+	plug := wemotest.New()
 	t.Cleanup(plug.Close)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
@@ -184,7 +231,10 @@ func TestWatchCommand(t *testing.T) {
 	done := make(chan int, 1)
 
 	go func() {
-		done <- cli.Run(ctx, []string{"watch", plug.Host(), "--callback", "127.0.0.1:0"}, &out, &out, plug.Client())
+		done <- cli.Run(ctx, cli.Environment{
+			Args: []string{"watch", plug.Host(), "--callback", "127.0.0.1:0"},
+			Out:  &out, Err: &out, Client: plug.Client(), Network: ssdptest.NewHost(),
+		})
 	}()
 
 	// The plug is switched only once the subscription's first event, the
@@ -200,7 +250,8 @@ func TestWatchCommand(t *testing.T) {
 	}
 
 	text := out.String()
-	if !strings.Contains(text, "Kitchen Lamp: subscribed uuid:") || !strings.Contains(text, "BinaryState = 0") ||
+	if !strings.Contains(text, "Kitchen Lamp: watching; callback http://127.0.0.1:") ||
+		!strings.Contains(text, "BinaryState = 0") ||
 		!strings.Contains(text, "BinaryState = 1") {
 		t.Fatalf("watch printed:\n%s", text)
 	}
@@ -209,21 +260,68 @@ func TestWatchCommand(t *testing.T) {
 		t.Fatal("watch left its subscription on the plug")
 	}
 
-	silent := upnptest.New()
+	silent := wemotest.New()
 	t.Cleanup(silent.Close)
 
 	silent.Silent = true
 
 	out.Reset()
 
-	status := cli.Run(
-		t.Context(),
-		[]string{"watch", silent.Host(), "--callback", "127.0.0.1:0", "--first-event", "300ms"},
-		&out,
-		&out,
-		silent.Client(),
-	)
+	// Bounded: a watch that waits for no first event would otherwise never end.
+	bounded, stop := context.WithTimeout(t.Context(), 10*time.Second)
+	defer stop()
+
+	status := cli.Run(bounded, cli.Environment{
+		Args: []string{"watch", silent.Host(), "--callback", "127.0.0.1:0", "--first-event", "300ms"},
+		Out:  &out, Err: &out, Client: silent.Client(), Network: ssdptest.NewHost(),
+	})
 	if status != cli.ExitError || !strings.Contains(out.String(), "no event from Kitchen Lamp within 300ms") {
 		t.Fatalf("watch on a silent plug: %d\n%s", status, out.String())
+	}
+}
+
+// TestDiscovery: a search finds every plug advertised, sorted by name; a
+// plug is then reached by its name; a device that answered and cannot be
+// described is said beside the others; and a network with no plug says so.
+func TestDiscovery(t *testing.T) {
+	t.Parallel()
+
+	hall, kitchen, gone := wemotest.New(), wemotest.New(), wemotest.New()
+	t.Cleanup(hall.Close)
+	t.Cleanup(kitchen.Close)
+
+	hall.FriendlyName = "Hall"
+
+	// A plug that was advertised and answers no more.
+	gone.Close()
+
+	// A network is one run's: its links are closed with the run's Browser.
+	network := func() ssdp.Network { return advertised(kitchen, hall, gone) }
+
+	out, status := runOn(t, network(), "discover", "--wait", "300ms")
+
+	first := strings.Index(out, "Hall                         Socket   "+wemotest.Firmware)
+	second := strings.Index(out, "Kitchen Lamp                 Socket   "+wemotest.Firmware)
+
+	if status != cli.ExitOK || first < 0 || second < first ||
+		!strings.Contains(out, " "+hall.Location()+"\n") || !strings.Contains(out, " "+kitchen.Location()+"\n") ||
+		!strings.Contains(out, "answered, not described: "+gone.Location()) {
+		t.Fatalf("discover: status %d, output:\n%s", status, out)
+	}
+
+	if out, status = runOn(t, network(), "--wait", "300ms", "on", "hall"); status != cli.ExitOK ||
+		!strings.Contains(out, "Hall: on\n") || !hall.On || kitchen.On {
+		t.Fatalf("on by name: status %d, output:\n%s", status, out)
+	}
+
+	out, status = runOn(t, network(), "--wait", "300ms", "get", "Garage")
+	if status != cli.ExitError || !strings.Contains(out, `no plug named "Garage"`) ||
+		!strings.Contains(out, "1 devices answered and could not be described") {
+		t.Fatalf("get of a name no plug has: status %d, output:\n%s", status, out)
+	}
+
+	if out, status = run(t, "discover", "--wait", "100ms"); status != cli.ExitOK ||
+		!strings.Contains(out, "No plug answered.") {
+		t.Fatalf("discover on a network with no plug: status %d, output:\n%s", status, out)
 	}
 }

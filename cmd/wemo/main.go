@@ -22,9 +22,17 @@ func main() {
 	app.Main(&app.Options{Name: "wemo"}, func(ctx context.Context) error {
 		// The plugs speak plain HTTP; the transport is primordium's for
 		// its dialer and its logging, TLS never comes into it.
-		client := &http.Client{Transport: network.NewTransport(), Timeout: requestTimeout}
+		// A plug's redirect is not followed: it would send a request,
+		// its arguments with it, wherever the plug points.
+		client := &http.Client{
+			Transport:     network.NewTransport(),
+			Timeout:       requestTimeout,
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		}
 
-		if code := cli.Run(ctx, os.Args[1:], os.Stdout, os.Stderr, client); code != cli.ExitOK {
+		env := cli.Environment{Args: os.Args[1:], Out: os.Stdout, Err: os.Stderr, Client: client}
+
+		if code := cli.Run(ctx, env); code != cli.ExitOK {
 			return shutdown.ExitError(code)
 		}
 

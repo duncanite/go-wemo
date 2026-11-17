@@ -2,14 +2,11 @@ package fleet
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"sort"
 	"strings"
 
-	"github.com/duncanite/go-wemo/ssdp"
 	"github.com/duncanite/go-wemo/wemo"
 )
 
@@ -19,22 +16,20 @@ type Found struct {
 	Settings Settings
 }
 
-// Discover finds the plugs on the network and reads each, keyed by serial.
-// A device that answered and could not be described or read, or whose
-// serial cannot be a file's name, is a failure beside the result, not an
-// error: the rest of the fleet is still there. Nobody answering is an
-// empty result.
-func Discover(ctx context.Context, client *http.Client, opts ssdp.Options) (map[string]Found, []error, error) {
-	plugs, failures, err := wemo.Discover(ctx, client, opts)
-	if err != nil && !errors.Is(err, ssdp.ErrNoAnswer) {
-		return nil, nil, err
-	}
+// Survey reads each of the plugs a program found, keyed by serial. A plug
+// that could not be read, or whose serial cannot be a file's name, is a
+// failure beside the result, not an error: the rest of the fleet is still
+// there. No plug is an empty result.
+func Survey(ctx context.Context, plugs []*wemo.Plug) (map[string]Found, []error) {
+	var failures []error
 
 	found := make(map[string]Found, len(plugs))
 
 	for _, plug := range plugs {
-		if _, err := named(plug.Serial); err != nil {
-			failures = append(failures, fmt.Errorf("%s: %w", plug.Base, err))
+		said := plug.Description()
+
+		if _, err := named(said.Serial); err != nil {
+			failures = append(failures, fmt.Errorf("%s: %w", said.URL, err))
 
 			continue
 		}
@@ -46,10 +41,10 @@ func Discover(ctx context.Context, client *http.Client, opts ssdp.Options) (map[
 			continue
 		}
 
-		found[plug.Serial] = Found{Plug: plug, Settings: settings}
+		found[said.Serial] = Found{Plug: plug, Settings: settings}
 	}
 
-	return found, failures, nil
+	return found, failures
 }
 
 // Diff is one key that differs between a file and its plug.
@@ -147,7 +142,9 @@ func (p *Plan) Write(out io.Writer) {
 	}
 
 	for _, found := range p.Unmanaged {
-		fmt.Fprintf(out, "unmanaged: %s %s %s\n", found.Plug.Serial, found.Settings.Name, found.Plug.Base.String())
+		said := found.Plug.Description()
+
+		fmt.Fprintf(out, "unmanaged: %s %s %s\n", said.Serial, found.Settings.Name, said.URL)
 	}
 
 	if n := len(p.Blind); n > 0 {

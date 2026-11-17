@@ -1,9 +1,9 @@
 // Package fleet keeps plugs as files: one YAML file per plug, named by its
-// serial, holding what a plug both takes and reads back. Discover finds
-// the plugs on the network and reads them, Compare sets the files against
-// what answered, Apply makes a plug match its file, and Dump writes the
-// files from the plugs. A plug that does not answer is unreachable, never
-// gone: discovery is best effort, and nothing here removes a file.
+// serial, holding what a plug both takes and reads back. Survey reads the
+// plugs a program found, Compare sets the files against what answered,
+// Apply makes a plug match its file, and Dump writes the files from the
+// plugs. A plug that does not answer is unreachable, never gone: finding
+// plugs is best effort, and nothing here removes a file.
 package fleet
 
 import (
@@ -44,10 +44,10 @@ type Settings struct {
 func Read(ctx context.Context, plug *wemo.Plug) (Settings, error) {
 	name, err := plug.Name(ctx)
 	if err != nil {
-		return Settings{}, fmt.Errorf("%s: %w", plug.FriendlyName, err)
+		return Settings{}, fmt.Errorf("%s: %w", plug.Description().Name, err)
 	}
 
-	return Settings{MAC: plug.MAC, Name: name, AutoUpdate: false}, nil
+	return Settings{MAC: plug.Description().MAC, Name: name, AutoUpdate: false}, nil
 }
 
 // Apply makes the plug match desired and returns what it holds afterwards,
@@ -68,7 +68,7 @@ func Apply(ctx context.Context, plug *wemo.Plug, desired Settings) (Settings, er
 
 	if desired.Name != current.Name {
 		if err = plug.Rename(ctx, desired.Name); err != nil {
-			return current, fmt.Errorf("%s: %w", plug.FriendlyName, err)
+			return current, fmt.Errorf("%s: %w", plug.Description().Name, err)
 		}
 
 		current, err = Read(ctx, plug)
@@ -82,7 +82,7 @@ func Apply(ctx context.Context, plug *wemo.Plug, desired Settings) (Settings, er
 	}
 
 	if err = plug.AutoUpdate(ctx, desired.AutoUpdate); err != nil {
-		return current, fmt.Errorf("%s: %w", plug.FriendlyName, err)
+		return current, fmt.Errorf("%s: %w", plug.Description().Name, err)
 	}
 
 	current.AutoUpdate = desired.AutoUpdate

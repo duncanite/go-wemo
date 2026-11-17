@@ -8,22 +8,24 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strings"
 	"time"
 
-	"github.com/mycophonic/primordium/fault"
-
-	"github.com/duncanite/go-wemo/upnp"
+	upnp "github.com/forkcloser/go-upnp"
 )
 
 // SetupHost is where a plug in setup mode sits on its own access point.
 const SetupHost = "10.22.22.1"
 
-// ErrLeft is the sentinel for a plug that stopped answering on its access
-// point after taking the connection request: it has gone to join the
-// network, and is found there, at a new address, a minute or two later.
+// ErrLeft is a plug that stopped answering on its access point after taking
+// the connection request: it has gone to join the network, and is found
+// there, at a new address, a minute or two later.
 var ErrLeft = errors.New("the plug left its access point to join the network")
+
+// ErrNotJoined is a plug that took the connection request, stayed on its
+// access point, and did not report itself connected in the time it was
+// given.
+var ErrNotJoined = errors.New("the plug did not join the network in time")
 
 // AccessPoint is one network the plug can see, from its scan.
 type AccessPoint struct {
@@ -38,19 +40,16 @@ type AccessPoint struct {
 // Networks asks the plug for the networks it sees. The answer is a text
 // table, one line per network, fields separated by |.
 func (p *Plug) Networks(ctx context.Context) ([]AccessPoint, error) {
-	svc, err := p.Service(WiFiSetup)
-	if err != nil {
-		return nil, err
-	}
-
-	answer, err := svc.Call(ctx, "GetApList", nil)
+	answer, err := p.invoke(ctx, WiFiSetup, "GetApList")
 	if err != nil {
 		return nil, err
 	}
 
 	var points []AccessPoint
 
-	lines := strings.Split(answer["ApList"], "\n")
+	table, _ := answer.Get("ApList")
+
+	lines := strings.Split(table, "\n")
 	for _, line := range lines[min(1, len(lines)):] {
 		line = strings.TrimSuffix(strings.TrimSpace(line), ",")
 		if line == "" || !strings.Contains(line, "|") {
@@ -86,23 +85,18 @@ type Meta struct {
 
 // MetaInfo reads the plug's meta information.
 func (p *Plug) MetaInfo(ctx context.Context) (Meta, error) {
-	svc, err := p.Service(MetaInfo)
+	answer, err := p.invoke(ctx, MetaInfo, "GetMetaInfo")
 	if err != nil {
 		return Meta{}, err
 	}
 
-	answer, err := svc.Call(ctx, "GetMetaInfo", nil)
-	if err != nil {
-		return Meta{}, err
-	}
-
-	raw := answer["MetaInfo"]
+	raw, _ := answer.Get("MetaInfo")
 
 	fields := strings.Split(raw, "|")
 
 	const expected = 2
 	if len(fields) < expected {
-		return Meta{}, fmt.Errorf("%w: MetaInfo %q has no MAC and serial", fault.ErrUnacceptableResponse, raw)
+		return Meta{}, fmt.Errorf("%w: MetaInfo %q has no MAC and serial", ErrAnswer, raw)
 	}
 
 	return Meta{MAC: strings.TrimSpace(fields[0]), Serial: strings.TrimSpace(fields[1]), Raw: raw}, nil
@@ -124,16 +118,16 @@ func EncryptPassphrase(passphrase string, meta Meta) (string, error) {
 	)
 
 	if passphrase == "" {
-		return "", fmt.Errorf("%w: an empty passphrase", fault.ErrInvalidArgument)
+		return "", fmt.Errorf("%w: an empty passphrase", ErrArgument)
 	}
 
 	if len(meta.MAC) != macLen {
-		return "", fmt.Errorf("%w: MAC %q is not twelve hex digits", fault.ErrInvalidArgument, meta.MAC)
+		return "", fmt.Errorf("%w: MAC %q is not twelve hex digits", ErrArgument, meta.MAC)
 	}
 
 	keydata := meta.MAC[:macLen/2] + meta.Serial + meta.MAC[macLen/2:]
 	if len(keydata) < ivLen {
-		return "", fmt.Errorf("%w: key material %q is too short", fault.ErrInvalidArgument, keydata)
+		return "", fmt.Errorf("%w: key material %q is too short", ErrArgument, keydata)
 	}
 
 	salt, vector := keydata[:saltLen], keydata[:ivLen]
@@ -142,7 +136,7 @@ func EncryptPassphrase(passphrase string, meta Meta) (string, error) {
 
 	block, err := aes.NewCipher(sum[:aes.BlockSize])
 	if err != nil {
-		return "", fmt.Errorf("%w: %w", fault.ErrSystemFailure, err)
+		return "", fmt.Errorf("making the passphrase's cipher: %w", err)
 	}
 
 	plain := []byte(passphrase)
@@ -157,7 +151,7 @@ func EncryptPassphrase(passphrase string, meta Meta) (string, error) {
 
 	encoded := base64.StdEncoding.EncodeToString(out)
 	if len(encoded) > maxLen || len(passphrase) > maxLen {
-		return "", fmt.Errorf("%w: the passphrase is too long for the plug", fault.ErrInvalidArgument)
+		return "", fmt.Errorf("%w: the passphrase is too long for the plug", ErrArgument)
 	}
 
 	return fmt.Sprintf("%s%02x%02x", encoded, len(encoded), len(passphrase)), nil
@@ -185,6 +179,12 @@ const (
 // information, send ConnectHomeNetwork, twice, since one send often does
 // nothing, then poll the status until it says connected, and close the
 // setup. Run against a plug in setup mode, on its own access point.
+//
+// It returns ErrLeft when the plug took the request and stopped answering,
+// which is how most joins end; ErrNotJoined when it stayed and did not
+// connect in time; an ErrArgument for a network it cannot join or a
+// passphrase it found too short; and an ErrNotFound for a network it does
+// not see.
 func (p *Plug) Join(ctx context.Context, ssid, passphrase string, opts SetupOptions) error {
 	const (
 		minTimeout  = 20 * time.Second
@@ -208,49 +208,46 @@ func (p *Plug) Join(ctx context.Context, ssid, passphrase string, opts SetupOpti
 		return err
 	}
 
-	svc, err := p.Service(WiFiSetup)
-	if err != nil {
+	if err = p.requestJoin(ctx, args); err != nil {
 		return err
 	}
 
-	if joinErr := requestJoin(ctx, svc, args); joinErr != nil {
-		return joinErr
-	}
-
-	status, err := awaitJoined(ctx, svc, timeout, poll)
+	status, err := p.awaitJoined(ctx, timeout, poll)
 	if err != nil {
-		if errors.Is(err, fault.ErrNetworkCommunication) {
+		if unanswered(ctx, err) {
 			return fmt.Errorf("%w: %w", ErrLeft, err)
 		}
 
 		return err
 	}
 
-	if closed, closeErr := svc.Call(ctx, "CloseSetup", nil); closeErr != nil {
-		slog.WarnContext(ctx, "close setup failed; the plug may still be connected", "err", closeErr)
-	} else {
-		slog.InfoContext(ctx, "setup closed", "status", closed["status"])
-	}
+	// A setup that would not close leaves the plug's verdict as it is:
+	// the join is judged by the status, and the access point goes when
+	// the plug does.
+	_, _ = p.invoke(ctx, WiFiSetup, "CloseSetup")
 
 	return p.joined(ctx, status, timeout)
+}
+
+// unanswered says a call failed with no word of the plug's and none of the
+// caller's: the client's own error, a plug that is not there.
+func unanswered(ctx context.Context, err error) bool {
+	return ctx.Err() == nil && !errors.Is(err, ErrRefused) && !errors.Is(err, ErrAnswer)
 }
 
 // requestJoin sends ConnectHomeNetwork twice, as the app did: a plug has
 // been seen to ignore the first. The plug may leave its access point for
 // the network on the first, and then nothing after it answers: that is
 // the join, not a failure.
-func requestJoin(ctx context.Context, svc *upnp.Service, args upnp.Arguments) error {
+func (p *Plug) requestJoin(ctx context.Context, args []upnp.Argument) error {
 	for attempt := range 2 {
-		answer, err := svc.Call(ctx, "ConnectHomeNetwork", args, "ssid", "auth", "password", "encrypt", "channel")
-		if err != nil {
-			if attempt > 0 && errors.Is(err, fault.ErrNetworkCommunication) {
+		if _, err := p.invoke(ctx, WiFiSetup, "ConnectHomeNetwork", args...); err != nil {
+			if attempt > 0 && unanswered(ctx, err) {
 				return fmt.Errorf("%w: %w", ErrLeft, err)
 			}
 
 			return err
 		}
-
-		slog.InfoContext(ctx, "connection requested", "attempt", attempt+1, "pairing", answer["PairingStatus"])
 	}
 
 	return nil
@@ -271,21 +268,22 @@ func (p *Plug) network(ctx context.Context, ssid string) (AccessPoint, error) {
 
 	return AccessPoint{}, fmt.Errorf(
 		"%w: the plug does not see %q; it sees %d networks",
-		fault.ErrNotFound,
+		ErrNotFound,
 		ssid,
 		len(points),
 	)
 }
 
-// credentials are ConnectHomeNetwork's arguments for the network: the
-// mode and cipher as the plug reported them, and the passphrase encrypted
-// under the plug's meta information, or nothing on an open network.
-func (p *Plug) credentials(ctx context.Context, point AccessPoint, ssid, passphrase string) (upnp.Arguments, error) {
+// credentials are ConnectHomeNetwork's arguments for the network, in the
+// service's order: the mode and cipher as the plug reported them, and the
+// passphrase encrypted under the plug's meta information, or nothing on an
+// open network.
+func (p *Plug) credentials(ctx context.Context, point AccessPoint, ssid, passphrase string) ([]upnp.Argument, error) {
 	auth, encryption, found := strings.Cut(point.Auth, "/")
 	if !found || strings.HasPrefix(auth, "UNKNOW") {
 		return nil, fmt.Errorf(
 			"%w: the plug reports %q for %s, a mode it cannot join; WPA3, or a transition network, reads so",
-			fault.ErrInvalidArgument, point.Auth, ssid,
+			ErrArgument, point.Auth, ssid,
 		)
 	}
 
@@ -294,13 +292,8 @@ func (p *Plug) credentials(ctx context.Context, point AccessPoint, ssid, passphr
 	if encryption == "NONE" {
 		auth = "OPEN"
 	} else {
-		// pywemo's reading of the app: a plug with rtos and not iot takes
-		// the second encryption method, which this does not implement.
-		if p.RTOS == "1" && p.IoT != "1" {
-			return nil, fmt.Errorf(
-				"%w: this plug's firmware wants the rtos passphrase encryption",
-				fault.ErrNotImplemented,
-			)
+		if p.newer {
+			return nil, fmt.Errorf("%w: this plug's firmware wants the rtos passphrase encryption", ErrUnsupported)
 		}
 
 		meta, err := p.MetaInfo(ctx)
@@ -314,8 +307,12 @@ func (p *Plug) credentials(ctx context.Context, point AccessPoint, ssid, passphr
 		}
 	}
 
-	return upnp.Arguments{
-		"ssid": ssid, "auth": auth, "password": encrypted, "encrypt": encryption, "channel": point.Channel,
+	return []upnp.Argument{
+		{Name: "ssid", Value: ssid},
+		{Name: "auth", Value: auth},
+		{Name: "password", Value: encrypted},
+		{Name: "encrypt", Value: encryption},
+		{Name: "channel", Value: point.Channel},
 	}, nil
 }
 
@@ -326,15 +323,15 @@ func (p *Plug) credentials(ctx context.Context, point AccessPoint, ssid, passphr
 func (p *Plug) joined(ctx context.Context, status string, timeout time.Duration) error {
 	switch status {
 	case statusConnected, statusHandshake:
-		if _, err := p.basic(ctx, "SetSetupDoneStatus", nil); err != nil {
-			slog.DebugContext(ctx, "setup done status not taken", "err", err)
-		}
+		// Not every firmware has the action, and the join stands
+		// without it.
+		_, _ = p.basic(ctx, "SetSetupDoneStatus")
 
 		return nil
 	case statusShortKey:
-		return fmt.Errorf("%w: the plug wants a passphrase of eight characters or more", fault.ErrInvalidArgument)
+		return fmt.Errorf("%w: the plug wants a passphrase of eight characters or more", ErrArgument)
 	default:
-		return fmt.Errorf("%w: the plug reports network status %s after %s", fault.ErrTimeout, status, timeout)
+		return fmt.Errorf("%w: it reports network status %s after %s", ErrNotJoined, status, timeout)
 	}
 }
 
@@ -342,7 +339,7 @@ func (p *Plug) joined(ctx context.Context, status string, timeout time.Duration)
 // was short, or the timeout passes. A plug may pass through 3 on its way
 // to 1, or settle there once joined, this firmware's steady state: 3 held
 // over steadyPolls polls in a row counts as joined.
-func awaitJoined(ctx context.Context, svc *upnp.Service, timeout, poll time.Duration) (string, error) {
+func (p *Plug) awaitJoined(ctx context.Context, timeout, poll time.Duration) (string, error) {
 	const steadyPolls = 3
 
 	deadline := time.Now().Add(timeout)
@@ -352,17 +349,16 @@ func awaitJoined(ctx context.Context, svc *upnp.Service, timeout, poll time.Dura
 	for time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
-			return status, fmt.Errorf("%w: %w", fault.ErrCancelled, ctx.Err())
+			return status, fmt.Errorf("waiting for the plug to join: %w", ctx.Err())
 		case <-time.After(poll):
 		}
 
-		answer, err := svc.Call(ctx, "GetNetworkStatus", nil)
+		answer, err := p.invoke(ctx, WiFiSetup, "GetNetworkStatus")
 		if err != nil {
 			return status, err
 		}
 
-		status = strings.TrimSpace(answer["NetworkStatus"])
-		slog.DebugContext(ctx, "network status", "status", status)
+		status = value(answer, "NetworkStatus")
 
 		if status == statusConnected || status == statusShortKey {
 			return status, nil
