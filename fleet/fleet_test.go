@@ -3,13 +3,8 @@ package fleet_test
 import (
 	"bytes"
 	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/forkcloser/xos"
-	"github.com/mycophonic/primordium/filesystem"
 
 	"github.com/duncanite/go-wemo/fleet"
 	"github.com/duncanite/go-wemo/wemo"
@@ -25,18 +20,6 @@ func opened(t *testing.T, plug *wemotest.Plug) *wemo.Plug {
 	}
 
 	return p
-}
-
-// data is the one dumped file, as text.
-func data(t *testing.T, dir string) string {
-	t.Helper()
-
-	raw, err := xos.ReadFile(filepath.Join(dir, wemotest.Serial+fleet.Extension))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	return string(raw)
 }
 
 func calls(plug *wemotest.Plug, action string) int {
@@ -105,136 +88,6 @@ func TestReadAndApply(t *testing.T) {
 	}
 }
 
-// TestFiles: a file round-trips by serial; a key no plug has, and a file
-// without the extension, are refused rather than skipped.
-func TestFiles(t *testing.T) {
-	t.Parallel()
-
-	dir := filepath.Join(t.TempDir(), "plugs")
-	want := fleet.Settings{MAC: "000C29000001", Name: "Kitchen Lamp"}
-
-	if err := fleet.Save(dir, wemotest.Serial, want); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-
-	files, err := fleet.Load(dir)
-	if err != nil || len(files) != 1 || files[wemotest.Serial] != want {
-		t.Fatalf("Load = %+v, %v", files, err)
-	}
-
-	stray := filepath.Join(dir, "notes.txt")
-	if err := filesystem.WriteFile(stray, []byte("x"), filesystem.FilePermissionsDefault); err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := fleet.Load(dir); !errors.Is(err, fleet.ErrInvalidFile) {
-		t.Fatalf("Load with a stray file = %v, want ErrInvalidFile", err)
-	}
-
-	if err := os.Remove(stray); err != nil {
-		t.Fatal(err)
-	}
-
-	typo := filepath.Join(dir, "SERIAL2"+fleet.Extension)
-	if err := filesystem.WriteFile(
-		typo,
-		[]byte("name: x\ncolour: red\n"),
-		filesystem.FilePermissionsDefault,
-	); err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := fleet.Load(dir); !errors.Is(err, fleet.ErrInvalidFile) {
-		t.Fatalf("Load with an unknown key = %v, want ErrInvalidFile", err)
-	}
-}
-
-// TestSurveyCompareDump: a plug found with no file is unmanaged; dumped,
-// it is a quiet plan; an edited file is a change; a file whose plug does
-// not answer is unreachable; a second dump leaves a file alone unless
-// forced.
-func TestSurveyCompareDump(t *testing.T) {
-	t.Parallel()
-
-	plug := wemotest.New()
-	t.Cleanup(plug.Close)
-
-	plugs := []*wemo.Plug{opened(t, plug)}
-
-	found, failures := fleet.Survey(t.Context(), plugs)
-	if len(failures) != 0 || len(found) != 1 || found[wemotest.Serial].Settings.Name != wemotest.Name {
-		t.Fatalf("Survey = %+v, %v", found, failures)
-	}
-
-	dir := filepath.Join(t.TempDir(), "plugs")
-
-	plan := fleet.Compare(map[string]fleet.Settings{}, found)
-	if !plan.Empty() || len(plan.Unmanaged) != 1 {
-		t.Fatalf("plan with no files = %+v", plan)
-	}
-
-	written, err := fleet.Dump(dir, found, false)
-	if err != nil || len(written) != 1 || written[0] != wemotest.Serial {
-		t.Fatalf("Dump = %v, %v", written, err)
-	}
-
-	files, err := fleet.Load(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	var out bytes.Buffer
-
-	plan = fleet.Compare(files, found)
-	plan.Write(&out)
-
-	if !plan.Empty() || len(plan.Unmanaged) != 0 || !strings.Contains(out.String(), "No changes.") ||
-		!strings.Contains(
-			out.String(),
-			"auto_update: sent on every apply to 1 plug;",
-		) || !strings.Contains(data(t, dir), "auto_update: false") {
-		t.Fatalf("plan after dump = %+v:\n%s", plan, out.String())
-	}
-
-	files[wemotest.Serial] = fleet.Settings{MAC: files[wemotest.Serial].MAC, Name: "Garage"}
-	files["NOBODY0000001"] = fleet.Settings{Name: "Attic"}
-
-	out.Reset()
-
-	plan = fleet.Compare(files, found)
-	plan.Write(&out)
-
-	if plan.Empty() || len(plan.Changes) != 1 || plan.Changes[0].Diffs[0].Key != "name" ||
-		len(plan.Unreachable) != 1 || plan.Unreachable[0] != "NOBODY0000001" {
-		t.Fatalf("plan after an edit = %+v:\n%s", plan, out.String())
-	}
-
-	if !strings.Contains(out.String(), `name: "Kitchen Lamp" -> "Garage"`) ||
-		!strings.Contains(out.String(), "unreachable: NOBODY0000001") {
-		t.Fatalf("plan said:\n%s", out.String())
-	}
-
-	plug.FriendlyName = "Renamed In The App"
-
-	found, failures = fleet.Survey(t.Context(), plugs)
-	if len(failures) != 0 {
-		t.Fatal(failures)
-	}
-
-	if again, dumpErr := fleet.Dump(dir, found, false); dumpErr != nil || len(again) != 0 {
-		t.Fatalf("second Dump without force = %v, %v, want nothing written", again, dumpErr)
-	}
-
-	if again, dumpErr := fleet.Dump(dir, found, true); dumpErr != nil || len(again) != 1 {
-		t.Fatalf("forced Dump = %v, %v", again, dumpErr)
-	}
-
-	files, err = fleet.Load(dir)
-	if err != nil || files[wemotest.Serial].Name != "Renamed In The App" {
-		t.Fatalf("after a forced dump the file reads %+v, %v", files[wemotest.Serial], err)
-	}
-}
-
 // TestApplyReadsBack: a plug that says ok and keeps its name is ErrKept.
 func TestApplyReadsBack(t *testing.T) {
 	t.Parallel()
@@ -250,9 +103,104 @@ func TestApplyReadsBack(t *testing.T) {
 	}
 }
 
-// TestCompareEdges: a file whose plug does not answer is not a quiet plan
-// on its own; a file's MAC matches the plug's whatever its case; a dotfile
-// in the directory is not a stray.
+// TestSettingsAsYAML: settings go to YAML and come back the same; a key no
+// plug has, and what is not YAML or not settings at all, are refused rather
+// than read as nothing.
+func TestSettingsAsYAML(t *testing.T) {
+	t.Parallel()
+
+	want := fleet.Settings{MAC: "000C29000001", Name: "Kitchen Lamp", AutoUpdate: true}
+
+	data, err := fleet.Format(want)
+	if err != nil || string(data) != "mac: 000C29000001\nname: Kitchen Lamp\nauto_update: true\n" {
+		t.Fatalf("Format = %q, %v", data, err)
+	}
+
+	if back, parseErr := fleet.Parse(data); parseErr != nil || back != want {
+		t.Fatalf("Parse of what Format wrote = %+v, %v", back, parseErr)
+	}
+
+	if partial, parseErr := fleet.Parse([]byte("name: Hall\n")); parseErr != nil ||
+		partial != (fleet.Settings{Name: "Hall"}) {
+		t.Fatalf("Parse of a name alone = %+v, %v", partial, parseErr)
+	}
+
+	for name, text := range map[string]string{
+		"a key no plug has": "name: x\ncolour: red\n",
+		"not YAML":          "name: [\n",
+		"a list":            "- name: x\n",
+		"nothing":           "",
+	} {
+		if settings, parseErr := fleet.Parse([]byte(text)); !errors.Is(parseErr, fleet.ErrSettings) ||
+			settings != (fleet.Settings{}) {
+			t.Errorf("Parse of %s = %+v, %v, want ErrSettings", name, settings, parseErr)
+		}
+	}
+}
+
+// TestSurveyAndCompare: a plug found with nothing kept is unmanaged; with
+// its settings kept as read, it is a quiet plan; with others, a change; and
+// settings whose plug does not answer are unreachable.
+func TestSurveyAndCompare(t *testing.T) {
+	t.Parallel()
+
+	plug := wemotest.New()
+	t.Cleanup(plug.Close)
+
+	found, failures := fleet.Survey(t.Context(), []*wemo.Plug{opened(t, plug)})
+	if len(failures) != 0 || len(found) != 1 || found[wemotest.Serial].Settings.Name != wemotest.Name {
+		t.Fatalf("Survey = %+v, %v", found, failures)
+	}
+
+	plan := fleet.Compare(map[string]fleet.Settings{}, found)
+	if !plan.Empty() || len(plan.Unmanaged) != 1 {
+		t.Fatalf("plan with nothing kept = %+v", plan)
+	}
+
+	var out bytes.Buffer
+
+	plan.Write(&out)
+
+	if want := "unmanaged: " + wemotest.Serial + " " + wemotest.Name + " " + plug.Location() + "\n"; !strings.Contains(
+		out.String(), want,
+	) {
+		t.Fatalf("plan with nothing kept said:\n%s\nwant %q", out.String(), want)
+	}
+
+	kept := map[string]fleet.Settings{wemotest.Serial: found[wemotest.Serial].Settings}
+
+	out.Reset()
+
+	plan = fleet.Compare(kept, found)
+	plan.Write(&out)
+
+	if !plan.Empty() || len(plan.Unmanaged) != 0 || !strings.Contains(out.String(), "No changes.") ||
+		!strings.Contains(out.String(), "auto_update: sent on every apply to 1 plug;") {
+		t.Fatalf("plan with the plug's settings kept = %+v:\n%s", plan, out.String())
+	}
+
+	kept[wemotest.Serial] = fleet.Settings{MAC: kept[wemotest.Serial].MAC, Name: "Garage"}
+	kept["NOBODY0000001"] = fleet.Settings{Name: "Attic"}
+
+	out.Reset()
+
+	plan = fleet.Compare(kept, found)
+	plan.Write(&out)
+
+	if plan.Empty() || len(plan.Changes) != 1 || plan.Changes[0].Diffs[0].Key != "name" ||
+		len(plan.Unreachable) != 1 || plan.Unreachable[0] != "NOBODY0000001" {
+		t.Fatalf("plan after an edit = %+v:\n%s", plan, out.String())
+	}
+
+	if !strings.Contains(out.String(), `name: "Kitchen Lamp" -> "Garage"`) ||
+		!strings.Contains(out.String(), "unreachable: NOBODY0000001") {
+		t.Fatalf("plan said:\n%s", out.String())
+	}
+}
+
+// TestCompareEdges: settings whose plug does not answer are not a quiet
+// plan on their own; a MAC kept matches the plug's whatever its case, and
+// one that is not the plug's is a change.
 func TestCompareEdges(t *testing.T) {
 	t.Parallel()
 
@@ -273,70 +221,27 @@ func TestCompareEdges(t *testing.T) {
 		wemotest.Serial: {MAC: strings.ToLower(p.Description().MAC), Name: wemotest.Name},
 	}
 	if plan := fleet.Compare(lower, found); !plan.Empty() || len(plan.Changes) != 0 {
-		t.Fatalf("a lower-case MAC in the file is a change: %+v", plan)
+		t.Fatalf("a lower-case MAC kept is a change: %+v", plan)
 	}
 
-	dir := filepath.Join(t.TempDir(), "plugs")
-	if err := fleet.Save(dir, wemotest.Serial, lower[wemotest.Serial]); err != nil {
-		t.Fatal(err)
-	}
-
-	for _, dotfile := range []string{".DS_Store", ".gitkeep"} {
-		if err := filesystem.WriteFile(
-			filepath.Join(dir, dotfile),
-			[]byte{},
-			filesystem.FilePermissionsDefault,
-		); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	if files, err := fleet.Load(dir); err != nil || len(files) != 1 {
-		t.Fatalf("Load beside dotfiles = %+v, %v", files, err)
+	other := map[string]fleet.Settings{wemotest.Serial: {MAC: "00:00:00:00:00:00", Name: wemotest.Name}}
+	if plan := fleet.Compare(other, found); plan.Empty() || len(plan.Changes) != 1 ||
+		plan.Changes[0].Diffs[0].Key != "mac" {
+		t.Fatalf("a MAC kept that is not the plug's is no change: %+v", plan)
 	}
 }
 
-// TestSerialsThatNameNoFile: a serial that is not a file's name in the
-// directory, or names one Load skips, is ErrInvalidFile from Save and from
-// Dump, forced or not, and nothing is made, in the directory or beside it.
-func TestSerialsThatNameNoFile(t *testing.T) {
+// TestSurveyFailures: a plug whose description states no serial, and one
+// that cannot be read, are failures naming them, and are not among the
+// found; the rest of the fleet is still there.
+func TestSurveyFailures(t *testing.T) {
 	t.Parallel()
 
-	root := t.TempDir()
-	dir := filepath.Join(root, "plugs")
-
-	for _, serial := range []string{
-		"", ".", "..", ".hidden", "../escaped", "sub/serial", "nul\x00serial", strings.Repeat("S", 300),
-	} {
-		if err := fleet.Save(dir, serial, fleet.Settings{Name: "Garage"}); !errors.Is(err, fleet.ErrInvalidFile) {
-			t.Errorf("Save under the serial %q = %v, want ErrInvalidFile", serial, err)
-		}
-
-		for _, force := range []bool{false, true} {
-			written, err := fleet.Dump(dir, map[string]fleet.Found{serial: {}}, force)
-			if !errors.Is(err, fleet.ErrInvalidFile) || len(written) != 0 {
-				t.Errorf("Dump of the serial %q, force %t = %v, %v, want ErrInvalidFile", serial, force, written, err)
-			}
-		}
-	}
-
-	if left, err := xos.ReadDir(root); err != nil || len(left) != 0 {
-		t.Fatalf("the refused serials left %v behind, %v", left, err)
-	}
-}
-
-// TestSurveyRefusesASerial: a plug whose description states a serial that
-// is not a file's name is a failure naming where it answered, and is not
-// among the found; one that cannot be read is a failure too, and the rest
-// of the fleet is still there.
-func TestSurveyRefusesASerial(t *testing.T) {
-	t.Parallel()
-
-	plug := wemotest.New()
-	t.Cleanup(plug.Close)
+	nameless := wemotest.New()
+	t.Cleanup(nameless.Close)
 
 	// A description is read as holding the later of two serialNumber elements.
-	plug.Extra = "<serialNumber>../../escaped</serialNumber>"
+	nameless.Extra = "<serialNumber></serialNumber>"
 
 	gone := wemotest.New()
 	unread := opened(t, gone)
@@ -346,11 +251,30 @@ func TestSurveyRefusesASerial(t *testing.T) {
 	sound := wemotest.New()
 	t.Cleanup(sound.Close)
 
-	found, failures := fleet.Survey(t.Context(), []*wemo.Plug{opened(t, plug), unread, opened(t, sound)})
+	found, failures := fleet.Survey(t.Context(), []*wemo.Plug{opened(t, nameless), unread, opened(t, sound)})
 	if len(found) != 1 || found[wemotest.Serial].Settings.Name != wemotest.Name || len(failures) != 2 ||
-		!errors.Is(failures[0], fleet.ErrInvalidFile) || !strings.Contains(failures[0].Error(), plug.Location()) ||
+		!errors.Is(failures[0], fleet.ErrSerial) || !strings.Contains(failures[0].Error(), nameless.Location()) ||
 		!strings.Contains(failures[1].Error(), wemotest.Name) {
 		t.Fatalf("Survey = %+v, %v", found, failures)
+	}
+}
+
+// TestSurveyOfTwoPlugsWithOneSerial: the plug read first is the fleet's, and
+// the other is a failure that names them both.
+func TestSurveyOfTwoPlugsWithOneSerial(t *testing.T) {
+	t.Parallel()
+
+	first, second := wemotest.New(), wemotest.New()
+	t.Cleanup(first.Close)
+	t.Cleanup(second.Close)
+
+	second.FriendlyName = "Impostor"
+
+	found, failures := fleet.Survey(t.Context(), []*wemo.Plug{opened(t, first), opened(t, second)})
+	if len(found) != 1 || found[wemotest.Serial].Settings.Name != wemotest.Name || len(failures) != 1 ||
+		!errors.Is(failures[0], fleet.ErrSerial) || !strings.Contains(failures[0].Error(), first.Location()) ||
+		!strings.Contains(failures[0].Error(), second.Location()) {
+		t.Fatalf("Survey of two plugs with one serial = %+v, %v", found, failures)
 	}
 }
 

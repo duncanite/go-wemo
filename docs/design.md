@@ -22,18 +22,21 @@ actions, events and SSDP, is [go-upnp](https://github.com/forkcloser/go-upnp)'s.
   stands and then what changes. It reads and writes no file and logs nothing.
 - `wemo/wemotest`: a plug for tests, speaking what one first-generation Switch was seen
   to speak.
-- `fleet`: plugs as files, for a reconciler to wire. One YAML file per plug, named by its
-  serial, holding what a plug takes: its name, read back and compared, and its auto-update
+- `fleet`: plugs as their settings say, for a reconciler to wire. What is kept of a plug,
+  by its serial, is what it takes: its name, read back and compared, and its auto-update
   switch, sent on every apply and never read, with the MAC for the reader. `Survey` reads
-  every plug a program found; `Compare` sets the files against what answered and sorts a
-  plug into changed, unreachable or unmanaged; `Apply` makes one plug match its file and
-  reads it back, since a plug says ok to a change it does not make; `Dump` writes the
-  files from the plugs. Unreachable is never deleted: finding plugs is best effort, and
-  nothing here removes a file. The plug has no action to read the auto-update switch back,
-  so a plan says what it will send rather than whether it holds.
+  every plug a program found; `Compare` sets what is kept against what answered and sorts
+  a plug into changed, unreachable or unmanaged; `Apply` makes one plug match its settings
+  and reads it back, since a plug says ok to a change it does not make; `Parse` and
+  `Format` are the settings from and to YAML. Unreachable is never forgotten: finding
+  plugs is best effort. The plug has no action to read the auto-update switch back, so a
+  plan says what it will send rather than whether it holds. It reads and writes no file.
 - `cmd/wemo` and `internal/cli`: the command, kong under primordium's process setup, logger
   and transport. It opens the host's SSDP, through go-upnp's `ssdp`, and lends it to the
   library.
+- `internal/files`: the fleet's settings as files, for the command: one YAML file per
+  plug in a directory, named by the plug's serial, which has to be a file's name and
+  nothing else. `plan`, `apply` and `dump` are the fleet over them.
 
 ## Decisions
 
@@ -95,6 +98,9 @@ wemo on|off|toggle <target>         # with --for 10m on on
 wemo watch <target>                 # events until interrupted
 wemo call <target> basicevent GetSignalStrength
 wemo setup --ssid <name>            # on the plug's own access point, WEMO_PASSPHRASE set
+wemo dump <dir>                     # a file for every plug that answers and has none
+wemo plan <dir>                     # the files against the plugs
+wemo apply <dir>                    # every plug that answers made to match its file
 ```
 
 `LOG_LEVEL=debug` shows every request and answer.

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/netip"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -14,7 +15,9 @@ import (
 	"github.com/forkcloser/go-upnp/ssdp"
 	"github.com/forkcloser/go-upnp/ssdp/ssdptest"
 
+	"github.com/duncanite/go-wemo/fleet"
 	"github.com/duncanite/go-wemo/internal/cli"
+	"github.com/duncanite/go-wemo/internal/files"
 	"github.com/duncanite/go-wemo/wemo"
 	"github.com/duncanite/go-wemo/wemo/wemotest"
 )
@@ -323,5 +326,99 @@ func TestDiscovery(t *testing.T) {
 	if out, status = run(t, "discover", "--wait", "100ms"); status != cli.ExitOK ||
 		!strings.Contains(out, "No plug answered.") {
 		t.Fatalf("discover on a network with no plug: status %d, output:\n%s", status, out)
+	}
+}
+
+// TestTheFleet: dump writes a file for every plug that answers and leaves
+// one that is there alone; plan sets the files against the plugs; apply
+// makes a plug match its file, says which file has no plug answering, and
+// fails when a plug keeps what it holds.
+func TestTheFleet(t *testing.T) {
+	t.Parallel()
+
+	kitchen, hall := wemotest.New(), wemotest.New()
+	t.Cleanup(kitchen.Close)
+	t.Cleanup(hall.Close)
+
+	const hallSerial = "221234K0100002"
+
+	hall.FriendlyName = "Hall"
+	// A description is read as holding the later of two serialNumber elements.
+	hall.Extra = "<serialNumber>" + hallSerial + "</serialNumber>"
+
+	dir := filepath.Join(t.TempDir(), "plugs")
+
+	fleetOf := func(args ...string) (string, int) {
+		return runOn(t, advertised(kitchen, hall), append([]string{"--wait", "300ms"}, args...)...)
+	}
+
+	out, status := fleetOf("dump", dir)
+	if status != cli.ExitOK ||
+		!strings.Contains(out, "wrote "+filepath.Join(dir, wemotest.Serial+files.Extension)+"\n") ||
+		!strings.Contains(out, "wrote "+filepath.Join(dir, hallSerial+files.Extension)+"\n") {
+		t.Fatalf("dump: status %d, output:\n%s", status, out)
+	}
+
+	if out, status = fleetOf("dump", dir); status != cli.ExitOK || !strings.Contains(out, "Nothing written.") {
+		t.Fatalf("a second dump: status %d, output:\n%s", status, out)
+	}
+
+	if out, status = fleetOf("plan", dir); status != cli.ExitOK || !strings.Contains(out, "No changes.") {
+		t.Fatalf("plan after a dump: status %d, output:\n%s", status, out)
+	}
+
+	kept, err := files.Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err = files.Save(dir, hallSerial, fleet.Settings{MAC: kept[hallSerial].MAC, Name: "Garage"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err = files.Save(dir, "NOBODY0000001", fleet.Settings{Name: "Attic"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if out, status = fleetOf("plan", dir); status != cli.ExitOK ||
+		!strings.Contains(out, hallSerial+" (Hall):\n  name: \"Hall\" -> \"Garage\"\n") ||
+		!strings.Contains(out, "unreachable: NOBODY0000001\n") || hall.FriendlyName != "Hall" {
+		t.Fatalf("plan after an edit: status %d, plug named %q, output:\n%s", status, hall.FriendlyName, out)
+	}
+
+	if out, status = fleetOf("apply", dir); status != cli.ExitOK ||
+		!strings.Contains(out, hallSerial+" (Garage): applied\n") ||
+		!strings.Contains(out, wemotest.Serial+" (Kitchen Lamp): applied\n") ||
+		!strings.Contains(out, "unreachable: NOBODY0000001\n") || hall.FriendlyName != "Garage" {
+		t.Fatalf("apply: status %d, plug named %q, output:\n%s", status, hall.FriendlyName, out)
+	}
+
+	if kitchen.AutoUpdate == nil || *kitchen.AutoUpdate {
+		t.Fatal("apply did not send the auto-update switch to a plug whose name was right")
+	}
+
+	if err = files.Save(dir, hallSerial, fleet.Settings{Name: "Porch"}); err != nil {
+		t.Fatal(err)
+	}
+
+	hall.KeepName = true
+
+	if out, status = fleetOf("apply", dir); status != cli.ExitError ||
+		!strings.Contains(out, "1 of 3 plugs do not match their file") || !strings.Contains(out, hallSerial) ||
+		!strings.Contains(out, "unreachable: NOBODY0000001\n") {
+		t.Fatalf("apply on a plug that keeps its name: status %d, output:\n%s", status, out)
+	}
+
+	if out, status = fleetOf("dump", "--force", dir); status != cli.ExitOK ||
+		!strings.Contains(out, "wrote "+filepath.Join(dir, hallSerial+files.Extension)+"\n") {
+		t.Fatalf("a forced dump: status %d, output:\n%s", status, out)
+	}
+
+	if kept, err = files.Load(dir); err != nil || kept[hallSerial].Name != "Garage" {
+		t.Fatalf("after a forced dump the file reads %+v, %v", kept[hallSerial], err)
+	}
+
+	if out, status = fleetOf("plan", filepath.Join(dir, "nowhere")); status != cli.ExitError {
+		t.Fatalf("plan of a directory that is not there: status %d, output:\n%s", status, out)
 	}
 }

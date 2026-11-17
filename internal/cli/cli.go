@@ -53,6 +53,9 @@ type rootCommand struct {
 	Networks networksCommand `cmd:"" help:"Print the networks the plug sees."`
 	Setup    setupCommand    `cmd:"" help:"Join a plug in setup mode to a network. The passphrase comes from WEMO_PASSPHRASE."`
 	Call     callCommand     `cmd:"" help:"Invoke any action a plug's service declares."`
+	Plan     planCommand     `cmd:"" help:"Set the plugs' files in a directory against the plugs that answer."`
+	Apply    applyCommand    `cmd:"" help:"Make every plug that answers match its file."`
+	Dump     dumpCommand     `cmd:"" help:"Write a file for every plug that answers and has none."`
 
 	out     io.Writer
 	client  wemo.Doer

@@ -73,9 +73,10 @@ golangci:
         rules:
           main:
             # What wemo is built on: the UPnP library, for the library and
-            # the command; the house application toolkit and the CLI
-            # framework, for the command; and the YAML parser for the
-            # fleet's files. Everything else stays the baseline's $gostd.
+            # the command; the YAML parser, for the fleet's settings; the
+            # house application toolkit, the CLI framework and xos, for the
+            # command and its files. Everything else stays the baseline's
+            # $gostd.
             allow:
               - github.com/forkcloser/go-upnp
               - github.com/mycophonic/primordium

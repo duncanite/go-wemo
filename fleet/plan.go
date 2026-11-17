@@ -2,6 +2,7 @@ package fleet
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -17,9 +18,9 @@ type Found struct {
 }
 
 // Survey reads each of the plugs a program found, keyed by serial. A plug
-// that could not be read, or whose serial cannot be a file's name, is a
-// failure beside the result, not an error: the rest of the fleet is still
-// there. No plug is an empty result.
+// that could not be read, that states no serial, or that states the serial
+// of a plug read before it, is a failure beside the result, not an error:
+// the rest of the fleet is still there. No plug is an empty result.
 func Survey(ctx context.Context, plugs []*wemo.Plug) (map[string]Found, []error) {
 	var failures []error
 
@@ -28,8 +29,17 @@ func Survey(ctx context.Context, plugs []*wemo.Plug) (map[string]Found, []error)
 	for _, plug := range plugs {
 		said := plug.Description()
 
-		if _, err := named(said.Serial); err != nil {
-			failures = append(failures, fmt.Errorf("%s: %w", said.URL, err))
+		if said.Serial == "" {
+			failures = append(failures, fmt.Errorf("%w: %s states no serial", ErrSerial, said.URL))
+
+			continue
+		}
+
+		if other, stated := found[said.Serial]; stated {
+			failures = append(failures, fmt.Errorf(
+				"%w: %s states the serial %q, which %s states too",
+				ErrSerial, said.URL, said.Serial, other.Plug.Description().URL,
+			))
 
 			continue
 		}
@@ -46,6 +56,10 @@ func Survey(ctx context.Context, plugs []*wemo.Plug) (map[string]Found, []error)
 
 	return found, failures
 }
+
+// ErrSerial is a plug a fleet cannot know by its serial: its description
+// states none, or one that a plug read before it states too.
+var ErrSerial = errors.New("not a serial to know a plug by")
 
 // Diff is one key that differs between a file and its plug.
 type Diff struct {
