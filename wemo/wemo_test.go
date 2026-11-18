@@ -3,64 +3,27 @@ package wemo_test
 import (
 	"context"
 	"errors"
-	"log/slog"
-	"os"
-	"os/exec"
+	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/mycophonic/primordium/fault"
+	upnp "github.com/forkcloser/go-upnp"
 
-	"github.com/duncanite/go-wemo/ssdp"
-	"github.com/duncanite/go-wemo/upnp"
-	"github.com/duncanite/go-wemo/upnp/upnptest"
 	"github.com/duncanite/go-wemo/wemo"
+	"github.com/duncanite/go-wemo/wemo/wemotest"
 )
 
-// loggedJoinEnv, when set, makes the test binary a child that joins a
-// plug of its own with the default logger at debug on its standard output.
+// joinPassphrase is a passphrase, and joinPassword what the fake plug is
+// sent for it.
 const (
-	loggedJoinEnv  = "WEMO_TEST_LOGGED_JOIN"
 	joinPassphrase = "correct horse battery"
-	// joinPassword is that passphrase as the fake plug is sent it.
-	joinPassword = "8aZoYhaDijAKwMORA5wATIYQf2gSXYeuuhrJ7LIqFX4=2c15"
+	joinPassword   = "8aZoYhaDijAKwMORA5wATIYQf2gSXYeuuhrJ7LIqFX4=2c15"
 )
 
-func TestMain(m *testing.M) {
-	if os.Getenv(loggedJoinEnv) != "" {
-		os.Exit(loggedJoin())
-	}
-
-	m.Run()
-}
-
-// loggedJoin is the child: 0 when the plug was sent the password, with
-// every record of the join on standard output.
-func loggedJoin() int {
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug})))
-
-	fake := upnptest.New()
-	defer fake.Close()
-
-	ctx := context.Background()
-
-	plug, err := wemo.Open(ctx, fake.Client(), fake.Host())
-	if err == nil {
-		err = plug.Join(ctx, "House", joinPassphrase, wemo.SetupOptions{Poll: 10 * time.Millisecond})
-	}
-
-	if err != nil || len(fake.Connects) == 0 || fake.Connects[0]["password"] != joinPassword {
-		slog.Error("the join in the child", "err", err, "connects", len(fake.Connects))
-
-		return 1
-	}
-
-	return 0
-}
-
-func open(t *testing.T, plug *upnptest.Plug) *wemo.Plug {
+func open(t *testing.T, plug *wemotest.Plug) *wemo.Plug {
 	t.Helper()
 
 	opened, err := wemo.Open(t.Context(), plug.Client(), plug.Host())
@@ -71,40 +34,136 @@ func open(t *testing.T, plug *upnptest.Plug) *wemo.Plug {
 	return opened
 }
 
-// TestDiscoverAndOpen: discovery through a search, and opening by URL and
-// by host and port; a bare host nobody answers on is not found, with the
-// last port's error.
-func TestDiscoverAndOpen(t *testing.T) {
+// got is what an answer holds under name.
+func got(answer upnp.Arguments, name string) string {
+	value, _ := answer.Get(name)
+
+	return value
+}
+
+// errNobody is what a client that reaches no one returns.
+var errNobody = errors.New("nobody answers there")
+
+// elsewhere is a client for a host that is not there: it reaches no one,
+// but for one port when it has a plug, where that plug answers; and it
+// keeps what it was asked for. No test asks the host it runs on for the
+// ports a Wemo serves on, which anything there may hold.
+type elsewhere struct {
+	port  string
+	plug  *wemotest.Plug
+	asked []string
+}
+
+func (e *elsewhere) Do(request *http.Request) (*http.Response, error) {
+	e.asked = append(e.asked, request.URL.String())
+
+	if e.plug == nil || request.URL.Port() != e.port {
+		return nil, errNobody
+	}
+
+	// The plug answers at its own address, as the one that was asked.
+	sent := request.Clone(request.Context())
+	sent.URL.Host = e.plug.Host()
+	sent.Host = ""
+
+	response, err := e.plug.Client().Do(sent)
+	if err != nil {
+		return nil, err
+	}
+
+	response.Request = request
+
+	return response, nil
+}
+
+// TestOpen: a plug opened by URL and by host and port is the same plug,
+// with what its description says; a bare host is probed through a Wemo's
+// ports in their order, found on the one that answers and not found when
+// none does; and what is no address is refused.
+func TestOpen(t *testing.T) {
 	t.Parallel()
 
-	plug := upnptest.New()
-	t.Cleanup(plug.Close)
+	fake := wemotest.New()
+	t.Cleanup(fake.Close)
 
-	plugs, failures, err := wemo.Discover(
-		t.Context(),
-		plug.Client(),
-		ssdp.Options{Target: plug.ServeSSDP(), Wait: time.Second},
-	)
-	if err != nil || len(failures) != 0 || len(plugs) != 1 || plugs[0].FriendlyName != upnptest.Name {
-		t.Fatalf("Discover = %v, %v, %v", plugs, failures, err)
+	byURL, err := wemo.Open(t.Context(), fake.Client(), fake.Location())
+	if err != nil {
+		t.Fatalf("Open by URL: %v", err)
 	}
 
-	byURL, urlErr := wemo.Open(t.Context(), plug.Client(), plug.Location())
-	if urlErr != nil || byURL.Serial != upnptest.Serial {
-		t.Fatalf("Open by URL = %v, %v", byURL, urlErr)
+	byHost := open(t, fake)
+
+	if byURL.ID() != wemotest.UDN || byHost.ID() != byURL.ID() {
+		t.Fatalf("ID = %q by URL, %q by host; want %q", byURL.ID(), byHost.ID(), wemotest.UDN)
 	}
 
-	if found, nameErr := wemo.ByName(plugs, "kitchen lamp"); nameErr != nil || found != plugs[0] {
+	want := wemo.Description{
+		URL:              fake.Location(),
+		Name:             wemotest.Name,
+		Model:            "Socket",
+		ModelNumber:      "1.0",
+		ModelDescription: "Belkin Plugin Socket 1.0",
+		Serial:           wemotest.Serial,
+		MAC:              wemotest.MAC,
+		Firmware:         wemotest.Firmware,
+		Hardware:         "v3",
+	}
+	if said := byHost.Description(); said != want {
+		t.Fatalf("Description = %+v\nwant %+v", said, want)
+	}
+
+	if device := byHost.Device(); device.UDN != wemotest.UDN || len(device.Services) != 10 {
+		t.Fatalf("Device = %q with %d services", device.UDN, len(device.Services))
+	}
+
+	plugs := []*wemo.Plug{byHost}
+
+	if found, nameErr := wemo.ByName(plugs, "kitchen lamp"); nameErr != nil || found != byHost {
 		t.Fatalf("ByName = %v, %v", found, nameErr)
 	}
 
-	if _, nameErr := wemo.ByName(plugs, "Garage"); !errors.Is(nameErr, wemo.ErrNoSuchPlug) {
+	if _, nameErr := wemo.ByName(plugs, "Garage"); !errors.Is(nameErr, wemo.ErrNotFound) {
 		t.Fatalf("ByName of a stranger = %v", nameErr)
 	}
 
-	_, err = wemo.Open(t.Context(), plug.Client(), "127.0.0.1")
-	if !errors.Is(err, fault.ErrNotFound) || !strings.Contains(err.Error(), "49159") {
+	// A bare host is probed through the ports a Wemo drifts among, in
+	// their order, and is not found when none answers.
+	absent := &elsewhere{}
+
+	_, err = wemo.Open(t.Context(), absent, "192.0.2.1")
+	if !errors.Is(err, wemo.ErrNotFound) || !errors.Is(err, errNobody) || !strings.Contains(err.Error(), "49159") {
 		t.Fatalf("Open of a bare host with nothing on its ports = %v", err)
+	}
+
+	tried := make([]string, 0, len(wemo.Ports()))
+	for _, port := range wemo.Ports() {
+		tried = append(tried, "http://192.0.2.1:"+strconv.Itoa(port)+"/setup.xml")
+	}
+
+	if !slices.Equal(absent.asked, tried) {
+		t.Fatalf("Open of a bare host asked %v\nwant %v", absent.asked, tried)
+	}
+
+	// A plug whose port drifted to the third is found there, after the
+	// two before it, and is driven there from then on.
+	drifted := &elsewhere{port: "49154", plug: fake}
+
+	moved, err := wemo.Open(t.Context(), drifted, "192.0.2.1")
+	if err != nil || moved.ID() != wemotest.UDN ||
+		moved.Description().URL != "http://192.0.2.1:49154/setup.xml" || len(drifted.asked) != 3 {
+		t.Fatalf("Open of a plug on its third port = %v, %v, after asking %v", moved, err, drifted.asked)
+	}
+
+	if on, _, stateErr := moved.State(t.Context()); stateErr != nil || on {
+		t.Fatalf("State of a plug on its third port = %v, %v", on, stateErr)
+	}
+
+	if _, err = wemo.Open(t.Context(), fake.Client(), "ftp://127.0.0.1/setup.xml"); !errors.Is(err, wemo.ErrArgument) {
+		t.Fatalf("Open of what is no http URL = %v", err)
+	}
+
+	if _, err = wemo.Open(t.Context(), fake.Client(), fake.URL+"/nothing.xml"); !errors.Is(err, wemo.ErrRefused) {
+		t.Fatalf("Open of a URL the plug has nothing at = %v", err)
 	}
 }
 
@@ -114,7 +173,7 @@ func TestDiscoverAndOpen(t *testing.T) {
 func TestTheVerbs(t *testing.T) {
 	t.Parallel()
 
-	fake := upnptest.New()
+	fake := wemotest.New()
 	t.Cleanup(fake.Close)
 
 	plug := open(t, fake)
@@ -135,6 +194,10 @@ func TestTheVerbs(t *testing.T) {
 		t.Fatalf("SetState with a countdown sent %s", fake.Bodies[len(fake.Bodies)-1])
 	}
 
+	if on, raw, err := plug.State(t.Context()); err != nil || !on || raw != "1" {
+		t.Fatalf("State of a plug that is on = %v %q %v", on, raw, err)
+	}
+
 	if on, err := plug.Toggle(t.Context()); err != nil || on || fake.On {
 		t.Fatalf("Toggle = %v %v, plug %v", on, err, fake.On)
 	}
@@ -147,7 +210,7 @@ func TestTheVerbs(t *testing.T) {
 		t.Fatalf("Name = %q %v", name, err)
 	}
 
-	if err := plug.Rename(t.Context(), "  "); !errors.Is(err, fault.ErrInvalidArgument) {
+	if err := plug.Rename(t.Context(), "  "); !errors.Is(err, wemo.ErrArgument) {
 		t.Fatalf("Rename to nothing = %v", err)
 	}
 
@@ -173,7 +236,7 @@ func TestTheVerbs(t *testing.T) {
 
 	now := time.Date(2026, time.November, 11, 17, 0, 0, 0, time.FixedZone("PST", -8*3600))
 
-	if answer, err := plug.TimeSync(t.Context(), now); err != nil || answer["status"] != "success" {
+	if answer, err := plug.TimeSync(t.Context(), now); err != nil || got(answer, "status") != "success" {
 		t.Fatalf("TimeSync = %v %v", answer, err)
 	}
 
@@ -182,10 +245,22 @@ func TestTheVerbs(t *testing.T) {
 		t.Fatalf("TimeSync sent %v", fake.TimeSynced)
 	}
 
+	zone, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	summer := time.Date(2026, time.July, 11, 17, 0, 0, 0, zone)
+
+	if _, err = plug.TimeSync(t.Context(), summer); err != nil || fake.TimeSynced["TimeZone"] != "-7.00" ||
+		fake.TimeSynced["dst"] != "1" {
+		t.Fatalf("TimeSync in daylight saving: %v, sent %v", err, fake.TimeSynced)
+	}
+
 	if answer, err := plug.FirmwareVersion(
 		t.Context(),
 	); err != nil ||
-		!strings.HasPrefix(answer["FirmwareVersion"], "FirmwareVersion:"+upnptest.Firmware) {
+		!strings.HasPrefix(got(answer, "FirmwareVersion"), "FirmwareVersion:"+wemotest.Firmware) {
 		t.Fatalf("FirmwareVersion = %v %v", answer, err)
 	}
 }
@@ -196,13 +271,13 @@ func TestTheVerbs(t *testing.T) {
 func TestCallReachesEverything(t *testing.T) {
 	t.Parallel()
 
-	fake := upnptest.New()
+	fake := wemotest.New()
 	t.Cleanup(fake.Close)
 
 	plug := open(t, fake)
 
-	answer, err := plug.Call(t.Context(), "basicevent", "GetMacAddr", nil)
-	if err != nil || answer["MacAddr"] != upnptest.MAC || answer["SerialNo"] != upnptest.Serial {
+	answer, err := plug.Call(t.Context(), "basicevent", "GetMacAddr")
+	if err != nil || got(answer, "MacAddr") != wemotest.MAC || got(answer, "SerialNo") != wemotest.Serial {
 		t.Fatalf("GetMacAddr = %v %v", answer, err)
 	}
 
@@ -212,7 +287,8 @@ func TestCallReachesEverything(t *testing.T) {
 		t.Context(),
 		"basicevent",
 		"SetBinaryState",
-		upnp.Arguments{"CountdownEndTime": "7", "BinaryState": "1"},
+		upnp.Argument{Name: "CountdownEndTime", Value: "7"},
+		upnp.Argument{Name: "BinaryState", Value: "1"},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -227,18 +303,18 @@ func TestCallReachesEverything(t *testing.T) {
 		t.Fatalf("an out argument was dropped or misplaced: %s", body)
 	}
 
-	_, err = plug.Call(t.Context(), "basicevent", "NoSuchAction", nil)
-	if !errors.Is(err, fault.ErrNotFound) || !strings.Contains(err.Error(), "47 actions") {
+	_, err = plug.Call(t.Context(), "basicevent", "NoSuchAction")
+	if !errors.Is(err, wemo.ErrNotFound) || !strings.Contains(err.Error(), "47 actions") {
 		t.Fatalf("an unknown action = %v", err)
 	}
 
-	_, err = plug.Call(t.Context(), "basicevent", "SetBinaryState", upnp.Arguments{"Bogus": "1"})
-	if !errors.Is(err, fault.ErrInvalidArgument) ||
+	_, err = plug.Call(t.Context(), "basicevent", "SetBinaryState", upnp.Argument{Name: "Bogus", Value: "1"})
+	if !errors.Is(err, wemo.ErrArgument) ||
 		!strings.Contains(err.Error(), "[BinaryState Duration EndAction UDN]") {
 		t.Fatalf("an unknown argument = %v", err)
 	}
 
-	if _, err := plug.Call(t.Context(), "nosuch", "X", nil); !errors.Is(err, fault.ErrNotFound) {
+	if _, err := plug.Call(t.Context(), "nosuch", "X"); !errors.Is(err, wemo.ErrNotFound) {
 		t.Fatalf("an unknown service = %v", err)
 	}
 }
@@ -250,7 +326,7 @@ func TestCallReachesEverything(t *testing.T) {
 func TestSetup(t *testing.T) {
 	t.Parallel()
 
-	fake := upnptest.New()
+	fake := wemotest.New()
 	t.Cleanup(fake.Close)
 
 	plug := open(t, fake)
@@ -263,19 +339,19 @@ func TestSetup(t *testing.T) {
 	}
 
 	meta, err := plug.MetaInfo(t.Context())
-	if err != nil || meta.MAC != upnptest.MAC || meta.Serial != upnptest.Serial {
+	if err != nil || meta.MAC != wemotest.MAC || meta.Serial != wemotest.Serial {
 		t.Fatalf("MetaInfo = %+v %v", meta, err)
 	}
 
 	// The vector: keydata 000C29 + 221234K0100001 + 000001, computed with
 	// openssl enc -aes-128-cbc under MD5(keydata+salt) and the first
 	// sixteen bytes as the vector, base64, then the two hex lengths.
-	encrypted, err := wemo.EncryptPassphrase("correct horse battery", meta)
-	if err != nil || encrypted != "8aZoYhaDijAKwMORA5wATIYQf2gSXYeuuhrJ7LIqFX4=2c15" {
+	encrypted, err := wemo.EncryptPassphrase(joinPassphrase, meta)
+	if err != nil || encrypted != joinPassword {
 		t.Fatalf("EncryptPassphrase = %q %v", encrypted, err)
 	}
 
-	if _, emptyErr := wemo.EncryptPassphrase("", meta); !errors.Is(emptyErr, fault.ErrInvalidArgument) {
+	if _, emptyErr := wemo.EncryptPassphrase("", meta); !errors.Is(emptyErr, wemo.ErrArgument) {
 		t.Fatal("an empty passphrase was encrypted")
 	}
 
@@ -283,7 +359,7 @@ func TestSetup(t *testing.T) {
 
 	started := time.Now()
 
-	if joinErr := plug.Join(t.Context(), "House", "correct horse battery", quick); joinErr != nil {
+	if joinErr := plug.Join(t.Context(), "House", joinPassphrase, quick); joinErr != nil {
 		t.Fatalf("Join: %v", joinErr)
 	}
 
@@ -297,11 +373,11 @@ func TestSetup(t *testing.T) {
 		t.Fatalf("ConnectHomeNetwork sent %v", fake.Connects)
 	}
 
-	if modeErr := plug.Join(t.Context(), "Transition", "x", quick); !errors.Is(modeErr, fault.ErrInvalidArgument) {
+	if modeErr := plug.Join(t.Context(), "Transition", "x", quick); !errors.Is(modeErr, wemo.ErrArgument) {
 		t.Fatalf("joining an UNKNOW network = %v", modeErr)
 	}
 
-	if seeErr := plug.Join(t.Context(), "Elsewhere", "x", quick); !errors.Is(seeErr, fault.ErrNotFound) {
+	if seeErr := plug.Join(t.Context(), "Elsewhere", "x", quick); !errors.Is(seeErr, wemo.ErrNotFound) {
 		t.Fatalf("joining a network the plug does not see = %v", seeErr)
 	}
 
@@ -309,35 +385,8 @@ func TestSetup(t *testing.T) {
 	fake.Connects = nil
 
 	err = plug.Join(t.Context(), "House", "short", quick)
-	if err == nil || !errors.Is(err, fault.ErrInvalidArgument) || !strings.Contains(err.Error(), "eight") {
+	if err == nil || !errors.Is(err, wemo.ErrArgument) || !strings.Contains(err.Error(), "eight") {
 		t.Fatalf("a short key = %v", err)
-	}
-}
-
-// TestJoinKeepsThePassphraseOutOfTheLog: at debug, the log of a join shows
-// the call and its arguments, and holds the passphrase neither as given
-// nor as sent. The join runs in a child, the default logger being the
-// whole process's.
-func TestJoinKeepsThePassphraseOutOfTheLog(t *testing.T) {
-	t.Parallel()
-
-	child := exec.CommandContext(t.Context(), os.Args[0])
-
-	child.Env = append(os.Environ(), loggedJoinEnv+"=1")
-
-	out, err := child.CombinedOutput()
-	text := string(out)
-
-	if err != nil {
-		t.Fatalf("the join in a child: %v\n%s", err, text)
-	}
-
-	if strings.Contains(text, joinPassphrase) || strings.Contains(text, joinPassword) {
-		t.Fatalf("the log of a join holds the passphrase:\n%s", text)
-	}
-
-	if !strings.Contains(text, "action=ConnectHomeNetwork") || !strings.Contains(text, "args.ssid=House") {
-		t.Fatalf("the log of a join does not show the call and its arguments:\n%s", text)
 	}
 }
 
@@ -347,19 +396,19 @@ func TestJoinKeepsThePassphraseOutOfTheLog(t *testing.T) {
 func TestJoinOnAPlugThatLeaves(t *testing.T) {
 	t.Parallel()
 
-	fake := upnptest.New()
+	fake := wemotest.New()
 	t.Cleanup(fake.Close)
 
 	fake.Leaves = true
 
 	plug := open(t, fake)
 
-	err := plug.Join(t.Context(), "House", "correct horse battery", wemo.SetupOptions{Poll: 10 * time.Millisecond})
+	err := plug.Join(t.Context(), "House", joinPassphrase, wemo.SetupOptions{Poll: 10 * time.Millisecond})
 	if !errors.Is(err, wemo.ErrLeft) {
 		t.Fatalf("Join on a plug that leaves = %v", err)
 	}
 
-	dead := upnptest.New()
+	dead := wemotest.New()
 	t.Cleanup(dead.Close)
 
 	dead.Dead = true
@@ -367,9 +416,77 @@ func TestJoinOnAPlugThatLeaves(t *testing.T) {
 	err = open(
 		t,
 		dead,
-	).Join(t.Context(), "House", "correct horse battery", wemo.SetupOptions{Poll: 10 * time.Millisecond})
-	if err == nil || errors.Is(err, wemo.ErrLeft) || !errors.Is(err, fault.ErrNetworkCommunication) {
-		t.Fatalf("Join on a plug dead from the first request = %v, want a network error and not ErrLeft", err)
+	).Join(t.Context(), "House", joinPassphrase, wemo.SetupOptions{Poll: 10 * time.Millisecond})
+	if err == nil || errors.Is(err, wemo.ErrLeft) || errors.Is(err, wemo.ErrRefused) {
+		t.Fatalf("Join on a plug dead from the first request = %v, want the client's error and not ErrLeft", err)
+	}
+}
+
+// TestJoinOnAPlugThatSaysNo: a plug that answers the status with a fault,
+// or with what is no answer, is still there: that is its word, and not
+// ErrLeft.
+func TestJoinOnAPlugThatSaysNo(t *testing.T) {
+	t.Parallel()
+
+	quick := wemo.SetupOptions{Poll: 10 * time.Millisecond}
+
+	faulting := wemotest.New()
+	t.Cleanup(faulting.Close)
+
+	faulting.Faults = map[string]string{"WiFiSetup.GetNetworkStatus": "501"}
+
+	err := open(t, faulting).Join(t.Context(), "House", joinPassphrase, quick)
+	if !errors.Is(err, wemo.ErrRefused) || errors.Is(err, wemo.ErrLeft) {
+		t.Fatalf("Join on a plug that faults at its status = %v, want ErrRefused and not ErrLeft", err)
+	}
+
+	garbling := wemotest.New()
+	t.Cleanup(garbling.Close)
+
+	garbling.Garbled = map[string]bool{"WiFiSetup.GetNetworkStatus": true}
+
+	err = open(t, garbling).Join(t.Context(), "House", joinPassphrase, quick)
+	if !errors.Is(err, wemo.ErrAnswer) || errors.Is(err, wemo.ErrLeft) {
+		t.Fatalf("Join on a plug that garbles its status = %v, want ErrAnswer and not ErrLeft", err)
+	}
+
+	// The second request refused is a refusal too, where no answer to it
+	// is the plug leaving.
+	twice := wemotest.New()
+	t.Cleanup(twice.Close)
+
+	plug := open(t, twice)
+
+	twice.Faults = map[string]string{"WiFiSetup.ConnectHomeNetwork": "501"}
+
+	if err = plug.Join(t.Context(), "House", joinPassphrase, quick); !errors.Is(err, wemo.ErrRefused) ||
+		errors.Is(err, wemo.ErrLeft) {
+		t.Fatalf("Join on a plug that faults at the request = %v, want ErrRefused and not ErrLeft", err)
+	}
+}
+
+// TestJoinGivenUp: a join whose context ends while the plug still connects
+// ends with the context's error, and is not taken for the plug leaving.
+func TestJoinGivenUp(t *testing.T) {
+	t.Parallel()
+
+	fake := wemotest.New()
+	t.Cleanup(fake.Close)
+
+	fake.Statuses = []string{"0"}
+
+	plug := open(t, fake)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+	defer cancel()
+
+	err := plug.Join(ctx, "House", joinPassphrase, wemo.SetupOptions{Poll: 10 * time.Millisecond})
+	if !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, wemo.ErrLeft) || len(fake.Connects) != 2 {
+		t.Fatalf(
+			"Join given up = %v after %d requests, want the context's error and not ErrLeft",
+			err,
+			len(fake.Connects),
+		)
 	}
 }
 
@@ -392,19 +509,16 @@ func count(calls []string, name string) int {
 func TestJoinRefusesTheNewerEncryption(t *testing.T) {
 	t.Parallel()
 
-	fake := upnptest.New()
+	fake := wemotest.New()
 	t.Cleanup(fake.Close)
 
 	fake.Extra = "<rtos>1</rtos>"
 
 	plug := open(t, fake)
-	if plug.RTOS != "1" {
-		t.Fatalf("rtos not read: %+v", plug.Device)
-	}
 
 	quick := wemo.SetupOptions{Poll: 10 * time.Millisecond}
 
-	if err := plug.Join(t.Context(), "House", "x", quick); !errors.Is(err, fault.ErrNotImplemented) {
+	if err := plug.Join(t.Context(), "House", "x", quick); !errors.Is(err, wemo.ErrUnsupported) {
 		t.Fatalf("a newer plug on a protected network = %v", err)
 	}
 
@@ -415,37 +529,15 @@ func TestJoinRefusesTheNewerEncryption(t *testing.T) {
 	if fake.Connects[0]["auth"] != "OPEN" || fake.Connects[0]["password"] != "" {
 		t.Fatalf("open network sent %v", fake.Connects[0])
 	}
-}
 
-// TestWatch: a subscription through the plug delivers the first event.
-func TestWatch(t *testing.T) {
-	t.Parallel()
+	// With iot beside rtos, the plug takes the original encryption.
+	both := wemotest.New()
+	t.Cleanup(both.Close)
 
-	fake := upnptest.New()
-	t.Cleanup(fake.Close)
+	both.Extra = "<rtos>1</rtos><iot>1</iot>"
 
-	plug := open(t, fake)
-
-	listener, err := upnp.Listen(t.Context(), "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	t.Cleanup(func() { _ = listener.Close(t.Context()) })
-
-	sub, err := plug.Watch(t.Context(), listener, time.Minute)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Generous: a loaded runner has taken seconds over a loopback round
-	// trip, and the test is about the event, not its latency.
-	select {
-	case event := <-listener.Events():
-		if event.SID != sub.SID || event.Properties["BinaryState"] != "0" {
-			t.Fatalf("event = %+v", event)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatalf("no first event within 30s; undelivered: %v", fake.Undelivered())
+	if err := open(t, both).Join(t.Context(), "House", joinPassphrase, quick); err != nil ||
+		both.Connects[0]["password"] != joinPassword {
+		t.Fatalf("a plug with rtos and iot on a protected network = %v, sent %v", err, both.Connects)
 	}
 }

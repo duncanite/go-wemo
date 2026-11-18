@@ -1,7 +1,8 @@
-package fleet
+// Package files keeps a fleet's settings as files, for the command: one YAML
+// file per plug in a directory, named by the plug's serial.
+package files
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -14,7 +15,8 @@ import (
 	"github.com/mycophonic/primordium/fault"
 	"github.com/mycophonic/primordium/filesystem"
 	"github.com/mycophonic/primordium/filesystem/pathcheck"
-	"go.yaml.in/yaml/v4"
+
+	"github.com/duncanite/go-wemo/fleet"
 )
 
 // Extension is the one the files carry; a file without it is not a
@@ -26,12 +28,14 @@ const Extension = ".yaml"
 // file's name.
 var ErrInvalidFile = fault.ErrInvalidArgument
 
-// named is the name of the file for serial. A serial is the plug's own
+// Named is the name of the file for serial. A serial is the plug's own
 // word, read off the network: one that is more than a file's name would
-// leave dir, and one that is empty or starts with a dot would name a file
-// Load skips.
-func named(serial string) (string, error) {
-	if serial == "" || strings.HasPrefix(serial, ".") {
+// leave dir, one that is empty or starts with a dot would name a file
+// Load skips, and one that holds anything but letters, digits, a dot, a
+// dash or an underscore is none a plug was seen to have, and would put a
+// separator of another system, or what a terminal obeys, in a name.
+func Named(serial string) (string, error) {
+	if serial == "" || strings.HasPrefix(serial, ".") || strings.ContainsFunc(serial, odd) {
 		return "", fmt.Errorf("%w: the serial %q cannot name a plug's file", ErrInvalidFile, serial)
 	}
 
@@ -43,16 +47,28 @@ func named(serial string) (string, error) {
 	return name, nil
 }
 
+// odd says a character is none a serial is made of.
+func odd(char rune) bool {
+	switch {
+	case char >= 'a' && char <= 'z', char >= 'A' && char <= 'Z', char >= '0' && char <= '9':
+		return false
+	case char == '.', char == '-', char == '_':
+		return false
+	default:
+		return true
+	}
+}
+
 // Load reads every file under dir, keyed by the serial its name carries.
-// A key the file states that Settings does not have is refused: a typo
+// A key the file states that a plug's settings do not have is refused: a typo
 // would otherwise enforce nothing, quietly.
-func Load(dir string) (map[string]Settings, error) {
+func Load(dir string) (map[string]fleet.Settings, error) {
 	entries, err := xos.ReadDir(dir)
 	if err != nil {
 		return nil, fmt.Errorf("%w: reading %s: %w", fault.ErrReadFailure, dir, err)
 	}
 
-	files := make(map[string]Settings, len(entries))
+	files := make(map[string]fleet.Settings, len(entries))
 
 	for _, entry := range entries {
 		// A dotfile is the directory's, not a plug's: .DS_Store, .gitkeep.
@@ -61,7 +77,7 @@ func Load(dir string) (map[string]Settings, error) {
 		}
 
 		serial, found := strings.CutSuffix(entry.Name(), Extension)
-		if !found || serial == "" {
+		if !found {
 			return nil, fmt.Errorf("%w: %s is not a plug's file", ErrInvalidFile, filepath.Join(dir, entry.Name()))
 		}
 
@@ -76,18 +92,15 @@ func Load(dir string) (map[string]Settings, error) {
 	return files, nil
 }
 
-func readFile(path string) (Settings, error) {
+func readFile(path string) (fleet.Settings, error) {
 	data, err := xos.ReadFile(path)
 	if err != nil {
-		return Settings{}, fmt.Errorf("%w: reading %s: %w", fault.ErrReadFailure, path, err)
+		return fleet.Settings{}, fmt.Errorf("%w: reading %s: %w", fault.ErrReadFailure, path, err)
 	}
 
-	decoder := yaml.NewDecoder(bytes.NewReader(data))
-	decoder.KnownFields(true)
-
-	var settings Settings
-	if err := decoder.Decode(&settings); err != nil {
-		return Settings{}, fmt.Errorf("%w: %s: %w", ErrInvalidFile, path, err)
+	settings, err := fleet.Parse(data)
+	if err != nil {
+		return fleet.Settings{}, fmt.Errorf("%w: %s: %w", ErrInvalidFile, path, err)
 	}
 
 	return settings, nil
@@ -96,8 +109,8 @@ func readFile(path string) (Settings, error) {
 // Save writes one plug's file under dir, creating dir when it is missing.
 // A serial that cannot be a file's name in dir is ErrInvalidFile, and
 // nothing is made.
-func Save(dir, serial string, settings Settings) error {
-	name, err := named(serial)
+func Save(dir, serial string, settings fleet.Settings) error {
+	name, err := Named(serial)
 	if err != nil {
 		return err
 	}
@@ -106,7 +119,7 @@ func Save(dir, serial string, settings Settings) error {
 		return fmt.Errorf("%w: creating %s: %w", fault.ErrWriteFailure, dir, err)
 	}
 
-	data, err := yaml.Marshal(settings)
+	data, err := fleet.Format(settings)
 	if err != nil {
 		return fmt.Errorf("%w: %s: %w", fault.ErrWriteFailure, serial, err)
 	}
@@ -125,7 +138,7 @@ func Save(dir, serial string, settings Settings) error {
 // forced dump. A plug with a file and no answer is not touched, since
 // not answering is not being gone. A serial that cannot be a file's name
 // in dir is ErrInvalidFile, and the dump stops there.
-func Dump(dir string, found map[string]Found, force bool) ([]string, error) {
+func Dump(dir string, found map[string]fleet.Found, force bool) ([]string, error) {
 	serials := make([]string, 0, len(found))
 	for serial := range found {
 		serials = append(serials, serial)
@@ -136,7 +149,7 @@ func Dump(dir string, found map[string]Found, force bool) ([]string, error) {
 	var written []string
 
 	for _, serial := range serials {
-		name, err := named(serial)
+		name, err := Named(serial)
 		if err != nil {
 			return written, err
 		}

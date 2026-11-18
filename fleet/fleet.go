@@ -1,28 +1,38 @@
-// Package fleet keeps plugs as files: one YAML file per plug, named by its
-// serial, holding what a plug both takes and reads back. Discover finds
-// the plugs on the network and reads them, Compare sets the files against
-// what answered, Apply makes a plug match its file, and Dump writes the
-// files from the plugs. A plug that does not answer is unreachable, never
-// gone: discovery is best effort, and nothing here removes a file.
+// Package fleet keeps plugs as their settings say: for each plug, by its
+// serial, what it both takes and reads back, which a program holds as YAML
+// wherever it keeps things. Survey reads the plugs a program found, Compare
+// sets the settings kept against what answered, and Apply makes a plug match
+// its own. Parse and Format are the settings from and to YAML. A plug that
+// does not answer is unreachable, never gone: finding plugs is best effort,
+// and nothing here says to forget one.
+//
+// It reads and writes no file: where the settings are kept is the
+// program's.
 package fleet
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
-	"github.com/mycophonic/primordium/fault"
+	"go.yaml.in/yaml/v4"
 
 	"github.com/duncanite/go-wemo/wemo"
 )
 
 // ErrKept is a plug that said ok and kept its value.
-var ErrKept = fault.ErrUnacceptableResponse
+var ErrKept = errors.New("the plug kept its value")
 
-// ErrReadOnly is a file stating a key the plug cannot be given.
-var ErrReadOnly = fault.ErrInvalidArgument
+// ErrReadOnly is settings stating a key the plug cannot be given.
+var ErrReadOnly = errors.New("not a key a plug can be given")
 
-// Settings is what a file holds: the keys a plug takes, and the MAC for
+// ErrSettings is YAML that is not a plug's settings: it does not parse, or
+// it states a key no plug has.
+var ErrSettings = errors.New("not a plug's settings")
+
+// Settings is what is kept of a plug: the keys it takes, and the MAC for
 // the reader. Name is read back and compared; AutoUpdate is write-only,
 // since the plug has no action to report it, so Apply sends it on every
 // run and Compare never diffs it.
@@ -39,15 +49,39 @@ type Settings struct {
 	AutoUpdate bool `yaml:"auto_update"` //nolint:tagliatelle // the files' keys are snake_case, as the console's are
 }
 
+// Parse reads a plug's settings from YAML. A key that Settings does not
+// have is refused: a typo would otherwise enforce nothing, quietly.
+func Parse(data []byte) (Settings, error) {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+
+	var settings Settings
+	if err := decoder.Decode(&settings); err != nil {
+		return Settings{}, fmt.Errorf("%w: %w", ErrSettings, err)
+	}
+
+	return settings, nil
+}
+
+// Format writes a plug's settings as YAML, which Parse reads back.
+func Format(settings Settings) ([]byte, error) {
+	data, err := yaml.Marshal(settings)
+	if err != nil {
+		return nil, fmt.Errorf("writing settings as YAML: %w", err)
+	}
+
+	return data, nil
+}
+
 // Read is the plug's settings as it holds them now; AutoUpdate comes back
 // false, the plug having no action to report it.
 func Read(ctx context.Context, plug *wemo.Plug) (Settings, error) {
 	name, err := plug.Name(ctx)
 	if err != nil {
-		return Settings{}, fmt.Errorf("%s: %w", plug.FriendlyName, err)
+		return Settings{}, fmt.Errorf("%s: %w", plug.Description().Name, err)
 	}
 
-	return Settings{MAC: plug.MAC, Name: name, AutoUpdate: false}, nil
+	return Settings{MAC: plug.Description().MAC, Name: name, AutoUpdate: false}, nil
 }
 
 // Apply makes the plug match desired and returns what it holds afterwards,
@@ -68,7 +102,7 @@ func Apply(ctx context.Context, plug *wemo.Plug, desired Settings) (Settings, er
 
 	if desired.Name != current.Name {
 		if err = plug.Rename(ctx, desired.Name); err != nil {
-			return current, fmt.Errorf("%s: %w", plug.FriendlyName, err)
+			return current, fmt.Errorf("%s: %w", plug.Description().Name, err)
 		}
 
 		current, err = Read(ctx, plug)
@@ -82,7 +116,7 @@ func Apply(ctx context.Context, plug *wemo.Plug, desired Settings) (Settings, er
 	}
 
 	if err = plug.AutoUpdate(ctx, desired.AutoUpdate); err != nil {
-		return current, fmt.Errorf("%s: %w", plug.FriendlyName, err)
+		return current, fmt.Errorf("%s: %w", plug.Description().Name, err)
 	}
 
 	current.AutoUpdate = desired.AutoUpdate

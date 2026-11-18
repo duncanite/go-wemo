@@ -25,9 +25,12 @@ just wemo describe 192.0.2.10 -s basicevent   # every action the plug declares
 [docs/protocol.md](docs/protocol.md) is what a plug speaks, on the LAN and toward the cloud,
 with ports, hosts, sources, and what one plug answered.
 
-The library is `ssdp`, `upnp` and `wemo`, one per layer, and `fleet`, which keeps plugs as
-files for a reconciler to wire: one file per plug by serial, discovered and read, compared,
-applied and read back. `cmd/wemo` and `internal/cli` are the command around them.
+The library is `wemo`, the plug, over [go-upnp](https://github.com/forkcloser/go-upnp),
+and `fleet`, which keeps plugs as their settings say, for a reconciler to wire: read,
+compared, applied and read back, by serial. The library opens no socket to find a plug,
+and reads and writes no file: it says what a plug looks like on the network, searches
+through the SSDP its caller lends, and takes and gives settings as YAML. `cmd/wemo` and
+`internal/cli` are the command around them, with the settings as files in a directory.
 
 ## Verifying a release
 

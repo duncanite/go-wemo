@@ -8,16 +8,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
-	"sort"
+	"maps"
+	"net/netip"
+	"net/url"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/alecthomas/kong"
+	upnp "github.com/forkcloser/go-upnp"
+	"github.com/forkcloser/go-upnp/ssdp"
 	"github.com/mycophonic/primordium/fault"
 
-	"github.com/duncanite/go-wemo/ssdp"
-	"github.com/duncanite/go-wemo/upnp"
 	"github.com/duncanite/go-wemo/wemo"
 )
 
@@ -51,9 +53,27 @@ type rootCommand struct {
 	Networks networksCommand `cmd:"" help:"Print the networks the plug sees."`
 	Setup    setupCommand    `cmd:"" help:"Join a plug in setup mode to a network. The passphrase comes from WEMO_PASSPHRASE."`
 	Call     callCommand     `cmd:"" help:"Invoke any action a plug's service declares."`
+	Plan     planCommand     `cmd:"" help:"Set the plugs' files in a directory against the plugs that answer."`
+	Apply    applyCommand    `cmd:"" help:"Make every plug that answers match its file."`
+	Dump     dumpCommand     `cmd:"" help:"Write a file for every plug that answers and has none."`
 
-	out    io.Writer
-	client *http.Client
+	out     io.Writer
+	client  wemo.Doer
+	network ssdp.Network
+}
+
+// Environment is where the command runs.
+type Environment struct {
+	// Args is its arguments, without its name.
+	Args []string
+	// Out and Err are where it writes.
+	Out io.Writer
+	Err io.Writer
+	// Client makes every request to the plugs. It has to follow no
+	// redirect.
+	Client wemo.Doer
+	// Network is where plugs are searched for; nil is the host's own.
+	Network ssdp.Network
 }
 
 type target struct {
@@ -62,8 +82,7 @@ type target struct {
 
 type (
 	discoverCommand struct {
-		Listen bool   `help:"After the search, keep printing the announcements plugs multicast."`
-		Target string `help:"Send the search here instead of the multicast group: a plug's host:1900 asks that plug alone."`
+		Listen bool `help:"After the search, keep printing the plugs that come and go."`
 	}
 	describeCommand struct {
 		target
@@ -85,10 +104,9 @@ type (
 		For time.Duration `help:"Switch back on after this long, by the plug's own countdown."`
 	}
 	watchCommand struct {
-		Targets    []string      `arg:""                                                                                                    help:"The plugs to watch."`
-		Callback   string        `help:"host:port the plugs notify; empty picks this host's address on the plug's network and a free port."`
-		Lease      time.Duration `default:"30m"                                                                                             help:"The subscription length asked of each plug."`
-		FirstEvent time.Duration `default:"10s"                                                                                             help:"How long a plug gets to send its first event, its current state, before the callback is judged unreachable."`
+		Targets    []string      `arg:""                                                                                                                              help:"The plugs to watch."`
+		Callback   string        `help:"host:port to listen at, which the plugs notify; empty picks this host's address on the first plug's network and a free port."`
+		FirstEvent time.Duration `default:"10s"                                                                                                                       help:"How long a plug gets to send its first event, its current state, before the callback is judged unreachable."`
 	}
 	nameCommand struct {
 		target
@@ -124,9 +142,8 @@ type (
 	}
 )
 
-// Run parses args and runs the command; the client makes every request to
-// the plugs.
-func Run(ctx context.Context, args []string, stdout, stderr io.Writer, client *http.Client) (status int) {
+// Run parses the arguments and runs the command.
+func Run(ctx context.Context, env Environment) (status int) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			exited, ok := recovered.(exitStatus)
@@ -138,23 +155,23 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, client *h
 		}
 	}()
 
-	root := rootCommand{out: stdout, client: client}
+	root := rootCommand{out: env.Out, client: env.Client, network: env.Network}
 
 	parser, err := kong.New(&root,
 		kong.Name("wemo"),
 		kong.Description("Speak to the Wemo plugs on this network."),
 		kong.UsageOnError(),
-		kong.Writers(stdout, stderr),
+		kong.Writers(env.Out, env.Err),
 		kong.Exit(func(code int) { panic(exitStatus(code)) }),
 		kong.BindTo(ctx, (*context.Context)(nil)),
 	)
 	if err != nil {
-		fmt.Fprintln(stderr, "wemo:", err)
+		fmt.Fprintln(env.Err, "wemo:", err)
 
 		return ExitError
 	}
 
-	kctx, err := parser.Parse(args)
+	kctx, err := parser.Parse(env.Args)
 	if err != nil {
 		parser.Errorf("%s", err)
 
@@ -162,7 +179,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, client *h
 	}
 
 	if err := kctx.Run(&root); err != nil {
-		fmt.Fprintln(stderr, "wemo:", err)
+		fmt.Fprintln(env.Err, "wemo:", err)
 
 		return ExitError
 	}
@@ -170,26 +187,141 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, client *h
 	return ExitOK
 }
 
-func (root *rootCommand) options() ssdp.Options {
-	return ssdp.Options{Interface: root.Interface, Wait: root.Wait}
+// located is a plug, and this host's address on its network when the search
+// that found it said.
+type located struct {
+	plug  *wemo.Plug
+	local netip.Addr
+}
+
+// lent is the host's SSDP as the library asks for it.
+type lent struct {
+	browser *ssdp.Browser
+}
+
+func (l lent) Browse(ctx context.Context, target string, handle func(wemo.Advertisement, bool)) error {
+	//nolint:wrapcheck // the Browser's own word, which the library hands on as it is
+	return l.browser.Browse(ctx, target, func(change ssdp.Change, heard ssdp.Advertisement) {
+		locations := make([]wemo.Location, 0, len(heard.Locations))
+		for _, location := range heard.Locations {
+			locations = append(locations, wemo.Location{URL: location.URL, Local: location.Local})
+		}
+
+		handle(wemo.Advertisement{USN: heard.USN, Locations: locations}, change == ssdp.Lost)
+	})
+}
+
+// browse opens the host's part in SSDP, on the interface named or on all.
+func (root *rootCommand) browse(ctx context.Context) (*ssdp.Browser, error) {
+	cfg := ssdp.Config{Network: root.network}
+
+	if root.Interface != "" {
+		cfg.Interfaces = func(candidate ssdp.Interface) bool { return candidate.Name == root.Interface }
+	}
+
+	browser, err := ssdp.Open(ctx, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("opening the network: %w", err)
+	}
+
+	return browser, nil
+}
+
+// search finds the plugs that answer within the wait and describes each,
+// sorted by name. A device that answered and will not be described is
+// returned beside them, so one odd device does not hide the others.
+func (root *rootCommand) search(ctx context.Context, browser *ssdp.Browser) ([]located, []error, error) {
+	searching, cancel := context.WithTimeout(ctx, root.Wait)
+	defer cancel()
+
+	found := make(map[wemo.ID]wemo.Found)
+
+	err := wemo.Find(searching, lent{browser: browser}, func(plug wemo.Found, lost bool) {
+		if lost {
+			delete(found, plug.ID)
+		} else {
+			found[plug.ID] = plug
+		}
+	})
+
+	if ctx.Err() != nil {
+		return nil, nil, fmt.Errorf("searching for plugs: %w", ctx.Err())
+	}
+
+	if !errors.Is(err, context.DeadlineExceeded) {
+		return nil, nil, fmt.Errorf("searching for plugs: %w", err)
+	}
+
+	var (
+		plugs    []located
+		failures []error
+	)
+
+	for _, id := range slices.Sorted(maps.Keys(found)) {
+		plug, openErr := root.open(ctx, found[id])
+		if openErr != nil {
+			failures = append(failures, openErr)
+
+			continue
+		}
+
+		plugs = append(plugs, plug)
+	}
+
+	slices.SortStableFunc(plugs, func(one, other located) int {
+		return strings.Compare(one.plug.Description().Name, other.plug.Description().Name)
+	})
+
+	return plugs, failures, nil
+}
+
+// open describes a plug that was found, at the first of its places that
+// answers.
+func (root *rootCommand) open(ctx context.Context, found wemo.Found) (located, error) {
+	failure := fmt.Errorf("%w: %s was heard at no address", fault.ErrNotFound, found.ID)
+
+	for _, location := range found.Locations {
+		plug, err := wemo.Open(ctx, root.client, location.URL)
+		if err == nil {
+			return located{plug: plug, local: location.Local}, nil
+		}
+
+		failure = fmt.Errorf("%s: %w", location.URL, err)
+	}
+
+	return located{}, failure
 }
 
 // resolve finds the plug a target names: a URL or a host directly, a name
-// through discovery.
-func (root *rootCommand) resolve(ctx context.Context, name string) (*wemo.Plug, error) {
+// through a search.
+func (root *rootCommand) resolve(ctx context.Context, name string) (located, error) {
 	if strings.Contains(name, "://") || looksLikeHost(name) {
-		return wemo.Open(ctx, root.client, name)
+		plug, err := wemo.Open(ctx, root.client, name)
+
+		return located{plug: plug}, err
 	}
 
-	plugs, failures, err := wemo.Discover(ctx, root.client, root.options())
+	browser, err := root.browse(ctx)
 	if err != nil {
-		return nil, err
+		return located{}, err
+	}
+
+	defer func() { _ = browser.Close() }()
+
+	found, failures, err := root.search(ctx, browser)
+	if err != nil {
+		return located{}, err
+	}
+
+	plugs := make([]*wemo.Plug, 0, len(found))
+	for _, each := range found {
+		plugs = append(plugs, each.plug)
 	}
 
 	plug, err := wemo.ByName(plugs, name)
 	if err != nil {
 		if len(failures) > 0 {
-			return nil, fmt.Errorf(
+			return located{}, fmt.Errorf(
 				"%w; %d devices answered and could not be described: %w",
 				err,
 				len(failures),
@@ -197,10 +329,16 @@ func (root *rootCommand) resolve(ctx context.Context, name string) (*wemo.Plug, 
 			)
 		}
 
-		return nil, err
+		return located{}, err
 	}
 
-	return plug, nil
+	for _, each := range found {
+		if each.plug == plug {
+			return each, nil
+		}
+	}
+
+	return located{plug: plug}, nil
 }
 
 // looksLikeHost tells an address from a name: digits and dots, a colon for
@@ -214,16 +352,22 @@ func looksLikeHost(name string) bool {
 }
 
 func (cmd *discoverCommand) Run(ctx context.Context, root *rootCommand) error {
-	opts := root.options()
-	opts.Target = cmd.Target
-
-	plugs, failures, err := wemo.Discover(ctx, root.client, opts)
-	if err != nil && !errors.Is(err, ssdp.ErrNoAnswer) {
+	browser, err := root.browse(ctx)
+	if err != nil {
 		return err
 	}
 
-	for _, plug := range plugs {
-		fmt.Fprintf(root.out, "%-28s %-8s %-36s %s\n", plug.FriendlyName, plug.Model, plug.Firmware, plug.Base.String())
+	defer func() { _ = browser.Close() }()
+
+	plugs, failures, err := root.search(ctx, browser)
+	if err != nil {
+		return err
+	}
+
+	for _, found := range plugs {
+		said := found.plug.Description()
+
+		fmt.Fprintf(root.out, "%-28s %-8s %-36s %s\n", said.Name, said.Model, said.Firmware, said.URL)
 	}
 
 	for _, failure := range failures {
@@ -238,61 +382,78 @@ func (cmd *discoverCommand) Run(ctx context.Context, root *rootCommand) error {
 		return nil
 	}
 
-	fmt.Fprintln(root.out, "Listening for announcements; interrupt to stop.")
+	fmt.Fprintln(root.out, "Listening for plugs that come and go; interrupt to stop.")
 
-	return ssdp.Listen(ctx, root.options(), func(ann ssdp.Announcement) {
-		state := "alive"
-		if !ann.Alive {
-			state = "bye"
+	err = wemo.Find(ctx, lent{browser: browser}, func(plug wemo.Found, lost bool) {
+		state, where := "found", ""
+		if lost {
+			state = "lost"
 		}
 
-		fmt.Fprintf(root.out, "%s %-6s %-40s %s\n", time.Now().Format(time.TimeOnly), state, ann.USN, ann.Location)
+		if len(plug.Locations) > 0 {
+			where = plug.Locations[0].URL
+		}
+
+		fmt.Fprintf(root.out, "%s %-6s %-40s %s\n", time.Now().Format(time.TimeOnly), state, plug.ID, where)
 	})
+	if ctx.Err() != nil {
+		return nil
+	}
+
+	return err
 }
 
 func (cmd *describeCommand) Run(ctx context.Context, root *rootCommand) error {
-	plug, err := root.resolve(ctx, cmd.Target)
+	found, err := root.resolve(ctx, cmd.Target)
 	if err != nil {
 		return err
 	}
 
+	plug := found.plug
+
 	if cmd.Service == "" {
+		said := plug.Description()
+
 		fmt.Fprintf(
 			root.out,
 			"name:        %s\nmodel:       %s %s (%s)\nhardware:    %s\nfirmware:    %s\nserial:      %s\nmac:         %s\nudn:         %s\nurl:         %s\nservices:\n",
-			plug.FriendlyName,
-			plug.Model,
-			plug.ModelNumber,
-			plug.Description,
-			plug.Hardware,
-			plug.Firmware,
-			plug.Serial,
-			plug.MAC,
-			plug.UDN,
-			plug.Base.String(),
+			said.Name,
+			said.Model,
+			said.ModelNumber,
+			said.ModelDescription,
+			said.Hardware,
+			said.Firmware,
+			said.Serial,
+			said.MAC,
+			plug.ID(),
+			said.URL,
 		)
 
-		for _, svc := range plug.Services {
-			fmt.Fprintf(root.out, "  %-16s %s\n", svc.Name(), svc.Type)
+		for _, service := range plug.Device().Services {
+			fmt.Fprintf(root.out, "  %-16s %s\n", wemo.ServiceName(service), service.Type)
 		}
 
 		return nil
 	}
 
-	svc, err := plug.Service(cmd.Service)
+	service, err := plug.Service(cmd.Service)
 	if err != nil {
 		return err
 	}
 
-	description, err := svc.Describe(ctx)
+	description, err := service.Describe(ctx, root.client)
 	if err != nil {
-		return err
+		return fmt.Errorf("%s: %w", cmd.Service, err)
 	}
 
 	for _, action := range description.Actions {
-		parts := make([]string, 0, len(action.Arguments))
-		for _, arg := range action.Arguments {
-			parts = append(parts, arg.Name+":"+arg.Direction)
+		parts := make([]string, 0, len(action.In)+len(action.Out))
+		for _, parameter := range action.In {
+			parts = append(parts, parameter.Name+":in")
+		}
+
+		for _, parameter := range action.Out {
+			parts = append(parts, parameter.Name+":out")
 		}
 
 		fmt.Fprintf(root.out, "%s(%s)\n", action.Name, strings.Join(parts, ", "))
@@ -302,17 +463,19 @@ func (cmd *describeCommand) Run(ctx context.Context, root *rootCommand) error {
 }
 
 func (cmd *getCommand) Run(ctx context.Context, root *rootCommand) error {
-	plug, err := root.resolve(ctx, cmd.Target)
+	found, err := root.resolve(ctx, cmd.Target)
 	if err != nil {
 		return err
 	}
+
+	plug := found.plug
 
 	on, raw, err := plug.State(ctx)
 	if err != nil {
 		return err
 	}
 
-	fmt.Fprintf(root.out, "%s: %s (%s)\n", plug.FriendlyName, onOff(on), raw)
+	fmt.Fprintf(root.out, "%s: %s (%s)\n", plug.Description().Name, onOff(on), raw)
 
 	return nil
 }
@@ -326,45 +489,51 @@ func (cmd *offCommand) Run(ctx context.Context, root *rootCommand) error {
 }
 
 func (root *rootCommand) set(ctx context.Context, name string, powered bool, revert time.Duration) error {
-	plug, err := root.resolve(ctx, name)
+	found, err := root.resolve(ctx, name)
 	if err != nil {
 		return err
 	}
+
+	plug := found.plug
 
 	if err := plug.SetState(ctx, powered, revert); err != nil {
 		return err
 	}
 
 	if revert > 0 {
-		fmt.Fprintf(root.out, "%s: %s for %s\n", plug.FriendlyName, onOff(powered), revert)
+		fmt.Fprintf(root.out, "%s: %s for %s\n", plug.Description().Name, onOff(powered), revert)
 	} else {
-		fmt.Fprintf(root.out, "%s: %s\n", plug.FriendlyName, onOff(powered))
+		fmt.Fprintf(root.out, "%s: %s\n", plug.Description().Name, onOff(powered))
 	}
 
 	return nil
 }
 
 func (cmd *toggleCommand) Run(ctx context.Context, root *rootCommand) error {
-	plug, err := root.resolve(ctx, cmd.Target)
+	found, err := root.resolve(ctx, cmd.Target)
 	if err != nil {
 		return err
 	}
+
+	plug := found.plug
 
 	on, err := plug.Toggle(ctx)
 	if err != nil {
 		return err
 	}
 
-	fmt.Fprintf(root.out, "%s: %s\n", plug.FriendlyName, onOff(on))
+	fmt.Fprintf(root.out, "%s: %s\n", plug.Description().Name, onOff(on))
 
 	return nil
 }
 
 func (cmd *nameCommand) Run(ctx context.Context, root *rootCommand) error {
-	plug, err := root.resolve(ctx, cmd.Target)
+	found, err := root.resolve(ctx, cmd.Target)
 	if err != nil {
 		return err
 	}
+
+	plug := found.plug
 
 	if cmd.New != "" {
 		if renameErr := plug.Rename(ctx, cmd.New); renameErr != nil {
@@ -383,26 +552,30 @@ func (cmd *nameCommand) Run(ctx context.Context, root *rootCommand) error {
 }
 
 func (cmd *signalCommand) Run(ctx context.Context, root *rootCommand) error {
-	plug, err := root.resolve(ctx, cmd.Target)
+	found, err := root.resolve(ctx, cmd.Target)
 	if err != nil {
 		return err
 	}
+
+	plug := found.plug
 
 	signal, err := plug.Signal(ctx)
 	if err != nil {
 		return err
 	}
 
-	fmt.Fprintf(root.out, "%s: %d%%\n", plug.FriendlyName, signal)
+	fmt.Fprintf(root.out, "%s: %d%%\n", plug.Description().Name, signal)
 
 	return nil
 }
 
 func (cmd *timeCommand) Run(ctx context.Context, root *rootCommand) error {
-	plug, err := root.resolve(ctx, cmd.Target)
+	found, err := root.resolve(ctx, cmd.Target)
 	if err != nil {
 		return err
 	}
+
+	plug := found.plug
 
 	answer, err := plug.TimeSync(ctx, time.Now())
 	if err != nil {
@@ -415,12 +588,14 @@ func (cmd *timeCommand) Run(ctx context.Context, root *rootCommand) error {
 }
 
 func (cmd *firmwareCommand) Run(ctx context.Context, root *rootCommand) error {
-	plug, err := root.resolve(ctx, cmd.Target)
+	found, err := root.resolve(ctx, cmd.Target)
 	if err != nil {
 		return err
 	}
 
-	fmt.Fprintf(root.out, "described: %s\n", plug.Firmware)
+	plug := found.plug
+
+	fmt.Fprintf(root.out, "described: %s\n", plug.Description().Firmware)
 
 	answer, err := plug.FirmwareVersion(ctx)
 	if err != nil {
@@ -459,13 +634,15 @@ func (cmd *resetCommand) Run(ctx context.Context, root *rootCommand) error {
 		return fmt.Errorf("%w: one of --wifi, --data or --all", fault.ErrInvalidArgument)
 	}
 
-	plug, err := root.resolve(ctx, cmd.Target)
+	found, err := root.resolve(ctx, cmd.Target)
 	if err != nil {
 		return err
 	}
 
+	plug := found.plug
+
 	if !cmd.Yes {
-		fmt.Fprintf(root.out, "would %s on %s (%s); add --yes\n", what, plug.FriendlyName, plug.Base.Host)
+		fmt.Fprintf(root.out, "would %s on %s (%s); add --yes\n", what, plug.Description().Name, host(plug))
 
 		return nil
 	}
@@ -475,16 +652,18 @@ func (cmd *resetCommand) Run(ctx context.Context, root *rootCommand) error {
 		return err
 	}
 
-	fmt.Fprintf(root.out, "%s: reset answered %q\n", plug.FriendlyName, answer)
+	fmt.Fprintf(root.out, "%s: reset answered %q\n", plug.Description().Name, answer)
 
 	return nil
 }
 
 func (cmd *networksCommand) Run(ctx context.Context, root *rootCommand) error {
-	plug, err := root.resolve(ctx, cmd.Target)
+	found, err := root.resolve(ctx, cmd.Target)
 	if err != nil {
 		return err
 	}
+
+	plug := found.plug
 
 	points, err := plug.Networks(ctx)
 	if err != nil {
@@ -508,18 +687,18 @@ func (cmd *setupCommand) Run(ctx context.Context, root *rootCommand) error {
 		return err
 	}
 
-	fmt.Fprintf(root.out, "%s: joining %s\n", plug.FriendlyName, cmd.SSID)
+	fmt.Fprintf(root.out, "%s: joining %s\n", plug.Description().Name, cmd.SSID)
 
 	err = plug.Join(ctx, cmd.SSID, cmd.Passphrase, wemo.SetupOptions{Timeout: cmd.Timeout})
 
 	switch {
 	case err == nil:
-		fmt.Fprintf(root.out, "%s: connected to %s\n", plug.FriendlyName, cmd.SSID)
+		fmt.Fprintf(root.out, "%s: connected to %s\n", plug.Description().Name, cmd.SSID)
 	case errors.Is(err, wemo.ErrLeft):
 		fmt.Fprintf(
 			root.out,
 			"%s: took the request and left its access point for %s; discover it there in a minute or two\n",
-			plug.FriendlyName,
+			plug.Description().Name,
 			cmd.SSID,
 		)
 	default:
@@ -530,23 +709,25 @@ func (cmd *setupCommand) Run(ctx context.Context, root *rootCommand) error {
 }
 
 func (cmd *callCommand) Run(ctx context.Context, root *rootCommand) error {
-	plug, err := root.resolve(ctx, cmd.Target)
+	found, err := root.resolve(ctx, cmd.Target)
 	if err != nil {
 		return err
 	}
 
-	args := make(upnp.Arguments, len(cmd.Args))
+	plug := found.plug
+
+	args := make([]upnp.Argument, 0, len(cmd.Args))
 
 	for _, pair := range cmd.Args {
-		name, value, found := strings.Cut(pair, "=")
-		if !found {
+		name, value, cut := strings.Cut(pair, "=")
+		if !cut {
 			return fmt.Errorf("%w: argument %q is not name=value", fault.ErrInvalidArgument, pair)
 		}
 
-		args[name] = value
+		args = append(args, upnp.Argument{Name: name, Value: value})
 	}
 
-	answer, err := plug.Call(ctx, cmd.Service, cmd.Action, args)
+	answer, err := plug.Call(ctx, cmd.Service, cmd.Action, args...)
 	if err != nil {
 		return err
 	}
@@ -556,17 +737,21 @@ func (cmd *callCommand) Run(ctx context.Context, root *rootCommand) error {
 	return nil
 }
 
-func printArguments(out io.Writer, args upnp.Arguments) {
-	names := make([]string, 0, len(args))
-	for name := range args {
-		names = append(names, name)
+// printArguments prints an answer, in the plug's order.
+func printArguments(out io.Writer, answer upnp.Arguments) {
+	for _, argument := range answer {
+		fmt.Fprintf(out, "%s: %s\n", argument.Name, argument.Value)
+	}
+}
+
+// host is the host and port a plug was described at.
+func host(plug *wemo.Plug) string {
+	described, err := url.Parse(plug.Description().URL)
+	if err != nil {
+		return plug.Description().URL
 	}
 
-	sort.Strings(names)
-
-	for _, name := range names {
-		fmt.Fprintf(out, "%s: %s\n", name, args[name])
-	}
+	return described.Host
 }
 
 func onOff(powered bool) string {

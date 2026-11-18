@@ -125,6 +125,12 @@ A first-generation Switch, `Socket 1.0`, hardware v3, firmware
   times a second apart and the socket listens a second past the MX window; with that, ten
   searches in ten found every plug, where one plug had answered only intermittently.
 
+- A subscription asked from a host on another network than the plug's, routed, with that
+  host's address for callback, is refused: `412 Precondition Failed`, on 2026-11-17, from
+  this module's eventing as it was and from go-upnp's alike. The description, the actions
+  and the switch all answered that same host. Whether the plug refuses the callback for
+  being off its network, or for another reason that holds there, was not told apart.
+
 ## Toward the cloud
 
 What the plugs try, all of it dead or dangerous, and what a firewall has to drop. Ports are
