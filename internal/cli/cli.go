@@ -20,6 +20,7 @@ import (
 	"github.com/forkcloser/go-upnp/ssdp"
 	"github.com/mycophonic/primordium/fault"
 
+	"github.com/duncanite/go-wemo/internal/terminal"
 	"github.com/duncanite/go-wemo/wemo"
 )
 
@@ -166,7 +167,7 @@ func Run(ctx context.Context, env Environment) (status int) {
 		kong.BindTo(ctx, (*context.Context)(nil)),
 	)
 	if err != nil {
-		fmt.Fprintln(env.Err, "wemo:", err)
+		terminal.Printf(env.Err, "wemo: %s\n", err)
 
 		return ExitError
 	}
@@ -179,7 +180,7 @@ func Run(ctx context.Context, env Environment) (status int) {
 	}
 
 	if err := kctx.Run(&root); err != nil {
-		fmt.Fprintln(env.Err, "wemo:", err)
+		terminal.Printf(env.Err, "wemo: %s\n", err)
 
 		return ExitError
 	}
@@ -367,22 +368,22 @@ func (cmd *discoverCommand) Run(ctx context.Context, root *rootCommand) error {
 	for _, found := range plugs {
 		said := found.plug.Description()
 
-		fmt.Fprintf(root.out, "%-28s %-8s %-36s %s\n", said.Name, said.Model, said.Firmware, said.URL)
+		terminal.Printf(root.out, "%-28s %-8s %-36s %s\n", said.Name, said.Model, said.Firmware, said.URL)
 	}
 
 	for _, failure := range failures {
-		fmt.Fprintf(root.out, "answered, not described: %v\n", failure)
+		terminal.Printf(root.out, "answered, not described: %v\n", failure)
 	}
 
 	if len(plugs) == 0 && len(failures) == 0 {
-		fmt.Fprintln(root.out, "No plug answered.")
+		terminal.Printf(root.out, "No plug answered.\n")
 	}
 
 	if !cmd.Listen {
 		return nil
 	}
 
-	fmt.Fprintln(root.out, "Listening for plugs that come and go; interrupt to stop.")
+	terminal.Printf(root.out, "Listening for plugs that come and go; interrupt to stop.\n")
 
 	err = wemo.Find(ctx, lent{browser: browser}, func(plug wemo.Found, lost bool) {
 		state, where := "found", ""
@@ -394,7 +395,7 @@ func (cmd *discoverCommand) Run(ctx context.Context, root *rootCommand) error {
 			where = plug.Locations[0].URL
 		}
 
-		fmt.Fprintf(root.out, "%s %-6s %-40s %s\n", time.Now().Format(time.TimeOnly), state, plug.ID, where)
+		terminal.Printf(root.out, "%s %-6s %-40s %s\n", time.Now().Format(time.TimeOnly), state, plug.ID, where)
 	})
 	if ctx.Err() != nil {
 		return nil
@@ -414,7 +415,7 @@ func (cmd *describeCommand) Run(ctx context.Context, root *rootCommand) error {
 	if cmd.Service == "" {
 		said := plug.Description()
 
-		fmt.Fprintf(
+		terminal.Printf(
 			root.out,
 			"name:        %s\nmodel:       %s %s (%s)\nhardware:    %s\nfirmware:    %s\nserial:      %s\nmac:         %s\nudn:         %s\nurl:         %s\nservices:\n",
 			said.Name,
@@ -430,7 +431,7 @@ func (cmd *describeCommand) Run(ctx context.Context, root *rootCommand) error {
 		)
 
 		for _, service := range plug.Device().Services {
-			fmt.Fprintf(root.out, "  %-16s %s\n", wemo.ServiceName(service), service.Type)
+			terminal.Printf(root.out, "  %-16s %s\n", wemo.ServiceName(service), service.Type)
 		}
 
 		return nil
@@ -456,7 +457,7 @@ func (cmd *describeCommand) Run(ctx context.Context, root *rootCommand) error {
 			parts = append(parts, parameter.Name+":out")
 		}
 
-		fmt.Fprintf(root.out, "%s(%s)\n", action.Name, strings.Join(parts, ", "))
+		terminal.Printf(root.out, "%s(%s)\n", action.Name, strings.Join(parts, ", "))
 	}
 
 	return nil
@@ -475,7 +476,7 @@ func (cmd *getCommand) Run(ctx context.Context, root *rootCommand) error {
 		return err
 	}
 
-	fmt.Fprintf(root.out, "%s: %s (%s)\n", plug.Description().Name, onOff(on), raw)
+	terminal.Printf(root.out, "%s: %s (%s)\n", plug.Description().Name, onOff(on), raw)
 
 	return nil
 }
@@ -501,9 +502,9 @@ func (root *rootCommand) set(ctx context.Context, name string, powered bool, rev
 	}
 
 	if revert > 0 {
-		fmt.Fprintf(root.out, "%s: %s for %s\n", plug.Description().Name, onOff(powered), revert)
+		terminal.Printf(root.out, "%s: %s for %s\n", plug.Description().Name, onOff(powered), revert)
 	} else {
-		fmt.Fprintf(root.out, "%s: %s\n", plug.Description().Name, onOff(powered))
+		terminal.Printf(root.out, "%s: %s\n", plug.Description().Name, onOff(powered))
 	}
 
 	return nil
@@ -522,7 +523,7 @@ func (cmd *toggleCommand) Run(ctx context.Context, root *rootCommand) error {
 		return err
 	}
 
-	fmt.Fprintf(root.out, "%s: %s\n", plug.Description().Name, onOff(on))
+	terminal.Printf(root.out, "%s: %s\n", plug.Description().Name, onOff(on))
 
 	return nil
 }
@@ -546,7 +547,7 @@ func (cmd *nameCommand) Run(ctx context.Context, root *rootCommand) error {
 		return err
 	}
 
-	fmt.Fprintln(root.out, name)
+	terminal.Printf(root.out, "%s\n", name)
 
 	return nil
 }
@@ -564,7 +565,7 @@ func (cmd *signalCommand) Run(ctx context.Context, root *rootCommand) error {
 		return err
 	}
 
-	fmt.Fprintf(root.out, "%s: %d%%\n", plug.Description().Name, signal)
+	terminal.Printf(root.out, "%s: %d%%\n", plug.Description().Name, signal)
 
 	return nil
 }
@@ -595,11 +596,11 @@ func (cmd *firmwareCommand) Run(ctx context.Context, root *rootCommand) error {
 
 	plug := found.plug
 
-	fmt.Fprintf(root.out, "described: %s\n", plug.Description().Firmware)
+	terminal.Printf(root.out, "described: %s\n", plug.Description().Firmware)
 
 	answer, err := plug.FirmwareVersion(ctx)
 	if err != nil {
-		fmt.Fprintf(root.out, "GetFirmwareVersion: %v\n", err)
+		terminal.Printf(root.out, "GetFirmwareVersion: %v\n", err)
 	} else {
 		printArguments(root.out, answer)
 	}
@@ -612,7 +613,7 @@ func (cmd *firmwareCommand) Run(ctx context.Context, root *rootCommand) error {
 		return err
 	}
 
-	fmt.Fprintln(root.out, "automatic firmware update: off")
+	terminal.Printf(root.out, "automatic firmware update: off\n")
 
 	return nil
 }
@@ -642,7 +643,7 @@ func (cmd *resetCommand) Run(ctx context.Context, root *rootCommand) error {
 	plug := found.plug
 
 	if !cmd.Yes {
-		fmt.Fprintf(root.out, "would %s on %s (%s); add --yes\n", what, plug.Description().Name, host(plug))
+		terminal.Printf(root.out, "would %s on %s (%s); add --yes\n", what, plug.Description().Name, host(plug))
 
 		return nil
 	}
@@ -652,7 +653,7 @@ func (cmd *resetCommand) Run(ctx context.Context, root *rootCommand) error {
 		return err
 	}
 
-	fmt.Fprintf(root.out, "%s: reset answered %q\n", plug.Description().Name, answer)
+	terminal.Printf(root.out, "%s: reset answered %q\n", plug.Description().Name, answer)
 
 	return nil
 }
@@ -671,7 +672,7 @@ func (cmd *networksCommand) Run(ctx context.Context, root *rootCommand) error {
 	}
 
 	for _, point := range points {
-		fmt.Fprintf(root.out, "%-32s ch %-3s %4s %s\n", point.SSID, point.Channel, point.Signal, point.Auth)
+		terminal.Printf(root.out, "%-32s ch %-3s %4s %s\n", point.SSID, point.Channel, point.Signal, point.Auth)
 	}
 
 	return nil
@@ -687,15 +688,15 @@ func (cmd *setupCommand) Run(ctx context.Context, root *rootCommand) error {
 		return err
 	}
 
-	fmt.Fprintf(root.out, "%s: joining %s\n", plug.Description().Name, cmd.SSID)
+	terminal.Printf(root.out, "%s: joining %s\n", plug.Description().Name, cmd.SSID)
 
 	err = plug.Join(ctx, cmd.SSID, cmd.Passphrase, wemo.SetupOptions{Timeout: cmd.Timeout})
 
 	switch {
 	case err == nil:
-		fmt.Fprintf(root.out, "%s: connected to %s\n", plug.Description().Name, cmd.SSID)
+		terminal.Printf(root.out, "%s: connected to %s\n", plug.Description().Name, cmd.SSID)
 	case errors.Is(err, wemo.ErrLeft):
-		fmt.Fprintf(
+		terminal.Printf(
 			root.out,
 			"%s: took the request and left its access point for %s; discover it there in a minute or two\n",
 			plug.Description().Name,
@@ -740,7 +741,7 @@ func (cmd *callCommand) Run(ctx context.Context, root *rootCommand) error {
 // printArguments prints an answer, in the plug's order.
 func printArguments(out io.Writer, answer upnp.Arguments) {
 	for _, argument := range answer {
-		fmt.Fprintf(out, "%s: %s\n", argument.Name, argument.Value)
+		terminal.Printf(out, "%s: %s\n", argument.Name, argument.Value)
 	}
 }
 

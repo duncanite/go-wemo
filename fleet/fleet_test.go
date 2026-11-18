@@ -278,6 +278,57 @@ func TestSurveyOfTwoPlugsWithOneSerial(t *testing.T) {
 	}
 }
 
+// TestAPlanShowsADevicesText: a name and a serial with a line's end, a
+// direction override and a control in them are written as text, each plug
+// on the one line a plan gives it.
+func TestAPlanShowsADevicesText(t *testing.T) {
+	t.Parallel()
+
+	plug := wemotest.New()
+	t.Cleanup(plug.Close)
+
+	plug.FriendlyName = "Lamp\nNo changes.\u202e\u009b2J"
+	// A description is read as holding the later of two serialNumber elements.
+	plug.Extra = "<serialNumber>S1\nunreachable: S2</serialNumber>"
+
+	found, failures := fleet.Survey(t.Context(), []*wemo.Plug{opened(t, plug)})
+	if len(found) != 1 || len(failures) != 0 {
+		t.Fatalf("Survey = %+v, %v", found, failures)
+	}
+
+	var out bytes.Buffer
+
+	fleet.Compare(map[string]fleet.Settings{}, found).Write(&out)
+
+	want := `unmanaged: S1\nunreachable: S2 Lamp\nNo changes.\u202e\u009b2J ` + plug.Location() + "\nNo changes.\n"
+	if out.String() != want {
+		t.Fatalf("the plan wrote %q\nwant %q", out.String(), want)
+	}
+
+	kept := map[string]fleet.Settings{
+		"S1\nunreachable: S2": {Name: "Hall"},
+		"S3\rS4":              {Name: "Attic"},
+	}
+
+	out.Reset()
+
+	fleet.Compare(kept, found).Write(&out)
+
+	for _, line := range []string{
+		`S1\nunreachable: S2 (Lamp\nNo changes.\u202e\u009b2J):` + "\n",
+		`  name: "Lamp\nNo changes.\u202e\u009b2J" -> "Hall"` + "\n",
+		`unreachable: S3\rS4` + "\n",
+	} {
+		if !strings.Contains(out.String(), line) {
+			t.Fatalf("the plan wrote %q\nwhich lacks %q", out.String(), line)
+		}
+	}
+
+	if strings.Count(out.String(), "\n") != 4 || strings.ContainsAny(out.String(), "\r\u202e\u009b") {
+		t.Fatalf("the plan wrote %q", out.String())
+	}
+}
+
 // TestSurveyOfNoPlug: no plug is an empty fleet.
 func TestSurveyOfNoPlug(t *testing.T) {
 	t.Parallel()
