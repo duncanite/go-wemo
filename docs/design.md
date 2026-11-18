@@ -34,6 +34,8 @@ actions, events and SSDP, is [go-upnp](https://github.com/forkcloser/go-upnp)'s.
 - `cmd/wemo` and `internal/cli`: the command, kong under primordium's process setup, logger
   and transport. It opens the host's SSDP, through go-upnp's `ssdp`, and lends it to the
   library.
+- `internal/terminal`: text printed so that a terminal shows it and obeys none of it,
+  for the command and for a plan's lines.
 - `internal/files`: the fleet's settings as files, for the command: one YAML file per
   plug in a directory, named by the plug's serial, which has to be a file's name and
   nothing else. `plan`, `apply` and `dump` are the fleet over them.
@@ -77,6 +79,16 @@ actions, events and SSDP, is [go-upnp](https://github.com/forkcloser/go-upnp)'s.
   reason, in the command, not a poll. A port that drifted is probed and said. A fault from
   the plug is the plug's code and text, whether it came with a 500 or, as a Wemo also
   does, inside a 200.
+- **A device's text is shown, never obeyed.** A plug's name, an event's value, a
+  network's name and a serial are whatever the device wrote, or whoever answers for it:
+  a line's end in one forges a line of the command's output, and a control or a
+  direction mark moves or reorders what is on the screen. Everything the command
+  prints, and a plan's lines, go through `internal/terminal`, which writes such
+  characters out as text and leaves the rest, accents and all, as it is. The format is
+  the program's own and every argument but a number is taken for a device's, text inside
+  a list or a structure too; and a test fails when the command prints a line any other
+  way, so that a line added later is covered without anyone thinking of it. The library's errors carry the text as
+  it came: the one that prints them is the one that knows where they go.
 - **The dangerous verbs ship, behind a flag.** `reset` wants `--yes`; `firmware` reads the
   version and turns auto-update off, never uploads; `setup` reads the passphrase from the
   environment, never an argument, and encrypts it the way the Belkin app did: AES-128-CBC

@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/duncanite/go-wemo/internal/terminal"
 	"github.com/duncanite/go-wemo/wemo"
 )
 
@@ -144,7 +145,7 @@ func (p *Plan) Empty() bool {
 // on what an apply sends blind.
 func (p *Plan) Write(out io.Writer) {
 	for _, change := range p.Changes {
-		fmt.Fprintf(out, "%s (%s):\n", change.Serial, change.Found.Settings.Name)
+		terminal.Printf(out, "%s (%s):\n", change.Serial, change.Found.Settings.Name)
 
 		for _, diff := range change.Diffs {
 			fmt.Fprintf(out, "  %s: %q -> %q\n", diff.Key, diff.Plug, diff.File)
@@ -152,13 +153,13 @@ func (p *Plan) Write(out io.Writer) {
 	}
 
 	for _, serial := range p.Unreachable {
-		fmt.Fprintf(out, "unreachable: %s\n", serial)
+		terminal.Printf(out, "unreachable: %s\n", serial)
 	}
 
 	for _, found := range p.Unmanaged {
 		said := found.Plug.Description()
 
-		fmt.Fprintf(out, "unmanaged: %s %s %s\n", said.Serial, found.Settings.Name, said.URL)
+		terminal.Printf(out, "unmanaged: %s %s %s\n", said.Serial, found.Settings.Name, said.URL)
 	}
 
 	if n := len(p.Blind); n > 0 {

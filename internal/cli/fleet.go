@@ -10,6 +10,7 @@ import (
 
 	"github.com/duncanite/go-wemo/fleet"
 	"github.com/duncanite/go-wemo/internal/files"
+	"github.com/duncanite/go-wemo/internal/terminal"
 	"github.com/duncanite/go-wemo/wemo"
 )
 
@@ -68,7 +69,7 @@ func (root *rootCommand) survey(ctx context.Context) (map[string]fleet.Found, []
 // report prints the devices that answered and are not among the found.
 func (root *rootCommand) report(failures []error) {
 	for _, failure := range failures {
-		fmt.Fprintf(root.out, "answered, not read: %v\n", failure)
+		terminal.Printf(root.out, "answered, not read: %v\n", failure)
 	}
 }
 
@@ -105,7 +106,7 @@ func (cmd *applyCommand) Run(ctx context.Context, root *rootCommand) error {
 	for _, serial := range slices.Sorted(maps.Keys(kept)) {
 		current, answered := found[serial]
 		if !answered {
-			fmt.Fprintf(root.out, "unreachable: %s\n", serial)
+			terminal.Printf(root.out, "unreachable: %s\n", serial)
 
 			continue
 		}
@@ -117,7 +118,7 @@ func (cmd *applyCommand) Run(ctx context.Context, root *rootCommand) error {
 			continue
 		}
 
-		fmt.Fprintf(root.out, "%s (%s): applied\n", serial, holds.Name)
+		terminal.Printf(root.out, "%s (%s): applied\n", serial, holds.Name)
 	}
 
 	root.report(failures)
@@ -143,7 +144,7 @@ func (cmd *dumpCommand) Run(ctx context.Context, root *rootCommand) error {
 	written, err := files.Dump(cmd.Dir, found, cmd.Force)
 
 	for _, serial := range written {
-		fmt.Fprintf(root.out, "wrote %s\n", filepath.Join(cmd.Dir, serial+files.Extension))
+		terminal.Printf(root.out, "wrote %s\n", filepath.Join(cmd.Dir, serial+files.Extension))
 	}
 
 	if err != nil {
@@ -151,7 +152,7 @@ func (cmd *dumpCommand) Run(ctx context.Context, root *rootCommand) error {
 	}
 
 	if len(written) == 0 {
-		fmt.Fprintln(root.out, "Nothing written.")
+		terminal.Printf(root.out, "Nothing written.\n")
 	}
 
 	root.report(failures)
