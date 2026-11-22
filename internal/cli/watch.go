@@ -12,6 +12,7 @@ import (
 
 	"github.com/mycophonic/primordium/fault"
 
+	"github.com/duncanite/go-wemo/internal/terminal"
 	"github.com/duncanite/go-wemo/wemo"
 )
 
@@ -100,7 +101,7 @@ func (cmd *watchCommand) print(
 		name := each.plug.Description().Name
 		silent[index] = name
 
-		fmt.Fprintf(root.out, "%s: watching; callback %s\n", name, callback)
+		terminal.Printf(root.out, "%s: watching; callback %s\n", name, callback)
 	}
 
 	for index, each := range plugs {
@@ -163,7 +164,7 @@ func follow(
 		defer printing.Unlock()
 
 		for _, property := range event.Properties {
-			fmt.Fprintf(root.out, "%s %-24s %s = %s\n",
+			terminal.Printf(root.out, "%s %-24s %s = %s\n",
 				time.Now().Format(time.TimeOnly), name, property.Name, property.Value)
 		}
 
