@@ -159,7 +159,7 @@ outbound costs the plug nothing a LAN controller uses.
   the date and the scope of the shutdown, the device list.
 - [Belkin WeMo Switch Communications Analysis](https://www.scip.ch/en/?labs.20160218=),
   scip AG, 2016: the API on TCP 8443 and its authentication.
-- [Can Allowlists Capture the Variability of Home IoT Device Network Behavior?](https://www.blaseur.com/papers/eurosp24-firewalls.pdf),
+- [Can Allowlists Capture the Variability of Home IoT Device Network Behavior?](https://par.nsf.gov/biblio/10542255),
   EuroS&P 2024: the move to `deviceapis.xwemo.com` after a firmware update.
 - [Dibby Wemo Manager](https://github.com/K0rb3nD4ll4S/dibby-wemo-manager): the claim that
   the scheduler stopped and the connection is pinned; and [pywemo issue
