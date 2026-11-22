@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/alecthomas/kong v1.17.0
-	github.com/forkcloser/go-upnp v0.0.0-20261122005959-2c5834f1dd6b
+	github.com/forkcloser/go-upnp v0.0.0-20261122055639-67c71c6ca7ec
 	github.com/forkcloser/xos v0.1.2
 	github.com/mycophonic/primordium v0.15.1
 	go.yaml.in/yaml/v4 v4.0.0
