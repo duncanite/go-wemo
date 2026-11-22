@@ -8,8 +8,8 @@ github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/forkcloser/blake3 v1.1.0 h1:E0tWTfoLiGurJrwvBcrrkiy1iAE80SX4WHx0BSyUOR8=
 github.com/forkcloser/blake3 v1.1.0/go.mod h1:BLJuiWNe+8WVt0HUpv4WA/Dc/QXXg9WvENESubhOuGQ=
-github.com/forkcloser/go-upnp v0.0.0-20261122005959-2c5834f1dd6b h1:HBY0w5vhPbTw9H8JUeTXB+CjByXgXjZTTYe3fYJeAXc=
-github.com/forkcloser/go-upnp v0.0.0-20261122005959-2c5834f1dd6b/go.mod h1:UD4KNnfvu9sTeRJx+jZyXL7YEixECNe7pa+XFdqbwik=
+github.com/forkcloser/go-upnp v0.0.0-20261122055639-67c71c6ca7ec h1:wqQNzI5EUY0vow1t7bkrx0ya9vBlbj/h6vCRGPYjLUo=
+github.com/forkcloser/go-upnp v0.0.0-20261122055639-67c71c6ca7ec/go.mod h1:UD4KNnfvu9sTeRJx+jZyXL7YEixECNe7pa+XFdqbwik=
 github.com/forkcloser/xos v0.1.2 h1:7TTH/bJ8hRIBIJPZp5WgIY//bgJFlyd+dpsgSEjnwOM=
 github.com/forkcloser/xos v0.1.2/go.mod h1:BxyGnZr+xW0m+0ph1xQ0qwHYs30hiXeUP7foOlKvxP0=
 github.com/getsentry/sentry-go v0.50.0 h1:gkO59rn/i0RCAXUUTflC5QVbTQGPXbaFabs2olVzc9g=
